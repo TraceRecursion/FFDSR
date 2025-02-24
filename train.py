@@ -13,7 +13,7 @@ from tqdm import tqdm
 import time
 
 
-# 1. 数据准备
+# 1. 数据准备（保持不变）
 class SRDataset(Dataset):
     def __init__(self, hr_dir, lr_dir, crop_size=None):
         self.hr_dir = hr_dir
@@ -48,7 +48,7 @@ class SRDataset(Dataset):
         return lr_img, hr_img
 
 
-# 2. 模型设计
+# 2. 模型设计（保持不变）
 class SEBlock(nn.Module):
     def __init__(self, channels, reduction=16):
         super(SEBlock, self).__init__()
@@ -129,22 +129,21 @@ class FeatureFusionSR(nn.Module):
         return sr_img
 
 
-# 3. 训练与评估
-def train(model, dataloader, criterion, optimizer, device, num_epochs=100):
+# 3. 训练与评估（修改部分）
+def train_and_validate(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=100):
     model.to(device)
-    model.train()
-    total_steps = len(dataloader)
-
-    # 创建models文件夹（如果不存在）
     os.makedirs("models", exist_ok=True)
 
+    best_val_loss = float('inf')
+
     for epoch in range(num_epochs):
+        # 训练阶段
+        model.train()
         running_loss = 0.0
         epoch_start_time = time.time()
+        progress_bar = tqdm(train_loader, desc=f"Epoch [{epoch + 1}/{num_epochs}] Training")
 
-        progress_bar = tqdm(dataloader, desc=f"Epoch [{epoch + 1}/{num_epochs}]", total=total_steps)
-
-        for i, (lr_img, hr_img) in enumerate(progress_bar):
+        for lr_img, hr_img in progress_bar:
             lr_img, hr_img = lr_img.to(device), hr_img.to(device)
 
             optimizer.zero_grad()
@@ -154,22 +153,41 @@ def train(model, dataloader, criterion, optimizer, device, num_epochs=100):
             optimizer.step()
 
             running_loss += loss.item()
+            avg_loss = running_loss / (len(progress_bar) + 1)
+            progress_bar.set_postfix({'Train Loss': f'{avg_loss:.4f}'})
 
-            avg_loss = running_loss / (i + 1)
-            elapsed_time = time.time() - epoch_start_time
-            steps_remaining = total_steps - (i + 1)
-            eta = (elapsed_time / (i + 1)) * steps_remaining
-            eta_str = f"{int(eta // 60)}m {int(eta % 60)}s"
-            progress_bar.set_postfix({'Loss': f'{avg_loss:.4f}', 'ETA': eta_str})
+        train_loss = running_loss / len(train_loader)
 
-        # 保存模型到models文件夹
-        torch.save(model.state_dict(), f"models/model_epoch_{epoch + 1}.pth")
+        # 验证阶段
+        model.eval()
+        val_loss = 0.0
+        with torch.no_grad():
+            for lr_img, hr_img in val_loader:
+                lr_img, hr_img = lr_img.to(device), hr_img.to(device)
+                sr_img = model(lr_img)
+                loss = criterion(sr_img, hr_img)
+                val_loss += loss.item()
+
+        val_loss = val_loss / len(val_loader)
+
+        # 保存最佳模型
+        if val_loss < best_val_loss:
+            best_val_loss = val_loss
+            torch.save(model.state_dict(), "models/best_model.pth")
+            print(f"新的最佳模型已保存于 epoch {epoch + 1}, 验证损失: {val_loss:.4f}")
+
+        # 每5个epoch保存一次检查点
+        if (epoch + 1) % 5 == 0:
+            torch.save(model.state_dict(), f"models/model_epoch_{epoch + 1}.pth")
+
+        print(f"Epoch [{epoch + 1}/{num_epochs}] 完成 - 训练损失: {train_loss:.4f}, 验证损失: {val_loss:.4f}")
+
     print("训练完成！")
 
 
-# 主函数
+# 主函数（修改部分）
 if __name__ == "__main__":
-    # 动态选择设备：优先CUDA，其次MPS，最后CPU
+    # 设备选择
     if torch.cuda.is_available():
         device = torch.device("cuda")
         print("Using device: CUDA (NVIDIA GPU)")
@@ -181,22 +199,25 @@ if __name__ == "__main__":
         print("No GPU available, using device: CPU")
 
     # 数据路径
-    hr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_HR"
-    lr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_LR_bicubic/X4"
+    train_hr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_HR"
+    train_lr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_LR_bicubic/X4"
+    val_hr_dir = "/Users/sydg/Documents/数据集/DIV2K/val/DIV2K_valid_HR"
+    val_lr_dir = "/Users/sydg/Documents/数据集/DIV2K/val/DIV2K_valid_LR_bicubic/X4"
 
     # 数据加载
-    dataset = SRDataset(hr_dir=hr_dir, lr_dir=lr_dir, crop_size=512)
-    dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
+    train_dataset = SRDataset(hr_dir=train_hr_dir, lr_dir=train_lr_dir, crop_size=512)
+    val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512)  # 验证集不需要随机裁剪可设为None
+    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
 
     # 模型、损失函数和优化器
     model = FeatureFusionSR().to(device)
     criterion = nn.L1Loss()
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
 
-    # 训练
-    train(model, dataloader, criterion, optimizer, device, num_epochs=100)
+    # 训练和验证
+    train_and_validate(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=100)
 
-    # 保存最终模型到models文件夹
-    os.makedirs("models", exist_ok=True)
+    # 保存最终模型
     torch.save(model.state_dict(), "models/final_model.pth")
     print("最终模型已保存为 models/final_model.pth")
