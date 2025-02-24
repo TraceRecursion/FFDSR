@@ -183,8 +183,8 @@ if __name__ == "__main__":
     lr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_LR_bicubic/X4"
 
     # 数据加载
-    dataset = SRDataset(hr_dir=hr_dir, lr_dir=lr_dir, crop_size=128)
-    dataloader = DataLoader(dataset, batch_size=4, shuffle=True)
+    dataset = SRDataset(hr_dir=hr_dir, lr_dir=lr_dir, crop_size=512)
+    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
 
     # 模型、损失函数和优化器
     model = FeatureFusionSR().to(device)
