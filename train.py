@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
-from torchvision import transforms
+from torchvision import transforms, models
 from torchvision.models.segmentation import deeplabv3_resnet101
 from torchvision.models import resnet18
 from PIL import Image
@@ -11,9 +11,10 @@ import os
 import numpy as np
 from tqdm import tqdm
 import time
+# 修改导入方式
+from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
-
-# 1. 数据准备（保持不变）
+# 1. 数据准备（不变）
 class SRDataset(Dataset):
     def __init__(self, hr_dir, lr_dir, crop_size=None):
         self.hr_dir = hr_dir
@@ -47,8 +48,7 @@ class SRDataset(Dataset):
 
         return lr_img, hr_img
 
-
-# 2. 模型设计（保持不变）
+# 2. 模型设计（不变）
 class SEBlock(nn.Module):
     def __init__(self, channels, reduction=16):
         super(SEBlock, self).__init__()
@@ -65,7 +65,6 @@ class SEBlock(nn.Module):
         y = self.avg_pool(x).view(b, c)
         y = self.fc(y).view(b, c, 1, 1)
         return x * y
-
 
 class EDSR(nn.Module):
     def __init__(self, in_channels=256, out_channels=3, num_blocks=8, upscale_factor=4):
@@ -86,7 +85,6 @@ class EDSR(nn.Module):
         x = self.conv2(x)
         x = self.pixel_shuffle(x)
         return x
-
 
 class FeatureFusionSR(nn.Module):
     def __init__(self):
@@ -128,19 +126,39 @@ class FeatureFusionSR(nn.Module):
         sr_img = self.sr_net(fused_feature)
         return sr_img
 
+# 3. 感知损失定义
+class PerceptualLoss(nn.Module):
+    def __init__(self, device):
+        super(PerceptualLoss, self).__init__()
+        vgg = models.vgg19(weights='DEFAULT').features.eval()
+        self.vgg = vgg.to(device)
+        for param in self.vgg.parameters():
+            param.requires_grad = False
+        self.layers = {'3': 64, '8': 128, '17': 256}  # conv1_2, conv2_2, conv3_4
 
-# 3. 训练与评估（修改部分）
-def train_and_validate(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=100):
+    def forward(self, sr_img, hr_img):
+        loss = 0.0
+        for name, module in self.vgg.named_children():
+            sr_img = module(sr_img)
+            hr_img = module(hr_img)
+            if name in self.layers:
+                loss += F.mse_loss(sr_img, hr_img)
+            if name == '17':  # 到 conv3_4 停止
+                break
+        return loss
+
+# 4. 训练与评估
+def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler, device, num_epochs=100):
     model.to(device)
     os.makedirs("models", exist_ok=True)
 
     best_val_loss = float('inf')
+    psnr = PeakSignalNoiseRatio().to(device)
+    ssim = StructuralSimilarityIndexMeasure().to(device)
 
     for epoch in range(num_epochs):
-        # 训练阶段
         model.train()
         running_loss = 0.0
-        epoch_start_time = time.time()
         progress_bar = tqdm(train_loader, desc=f"Epoch [{epoch + 1}/{num_epochs}] Training")
 
         for lr_img, hr_img in progress_bar:
@@ -148,8 +166,11 @@ def train_and_validate(model, train_loader, val_loader, criterion, optimizer, de
 
             optimizer.zero_grad()
             sr_img = model(lr_img)
-            loss = criterion(sr_img, hr_img)
+            l1_loss = criterion_l1(sr_img, hr_img)
+            perc_loss = criterion_perceptual(sr_img, hr_img)
+            loss = l1_loss + 0.1 * perc_loss
             loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
             optimizer.step()
 
             running_loss += loss.item()
@@ -157,67 +178,68 @@ def train_and_validate(model, train_loader, val_loader, criterion, optimizer, de
             progress_bar.set_postfix({'Train Loss': f'{avg_loss:.4f}'})
 
         train_loss = running_loss / len(train_loader)
+        scheduler.step()
 
-        # 验证阶段
         model.eval()
         val_loss = 0.0
+        val_psnr = 0.0
+        val_ssim = 0.0
         with torch.no_grad():
             for lr_img, hr_img in val_loader:
                 lr_img, hr_img = lr_img.to(device), hr_img.to(device)
                 sr_img = model(lr_img)
-                loss = criterion(sr_img, hr_img)
+                l1_loss = criterion_l1(sr_img, hr_img)
+                perc_loss = criterion_perceptual(sr_img, hr_img)
+                loss = l1_loss + 0.1 * perc_loss
                 val_loss += loss.item()
+                val_psnr += psnr(sr_img, hr_img).item()
+                val_ssim += ssim(sr_img, hr_img).item()
 
         val_loss = val_loss / len(val_loader)
+        val_psnr = val_psnr / len(val_loader)
+        val_ssim = val_ssim / len(val_loader)
 
-        # 保存最佳模型
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), "models/best_model.pth")
-            print(f"新的最佳模型已保存于 epoch {epoch + 1}, 验证损失: {val_loss:.4f}")
+            print(f"新最佳模型在 epoch {epoch + 1} 处保存, Val Loss: {val_loss:.4f}, PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}")
 
-        # 每5个epoch保存一次检查点
         if (epoch + 1) % 5 == 0:
             torch.save(model.state_dict(), f"models/model_epoch_{epoch + 1}.pth")
 
-        print(f"Epoch [{epoch + 1}/{num_epochs}] 完成 - 训练损失: {train_loss:.4f}, 验证损失: {val_loss:.4f}")
+        print(f"Epoch [{epoch + 1}/{num_epochs}] - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}")
 
     print("训练完成！")
 
-
-# 主函数（修改部分）
+# 主函数
 if __name__ == "__main__":
-    # 设备选择
     if torch.cuda.is_available():
         device = torch.device("cuda")
-        print("Using device: CUDA (NVIDIA GPU)")
+        print("使用设备: CUDA (NVIDIA GPU)")
     elif torch.backends.mps.is_available():
         device = torch.device("mps")
-        print("Using device: MPS (Apple GPU)")
+        print("使用设备: MPS (Apple GPU)")
     else:
         device = torch.device("cpu")
-        print("No GPU available, using device: CPU")
+        print("没有可用的GPU，使用设备: CPU")
 
-    # 数据路径
     train_hr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_HR"
     train_lr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_LR_bicubic/X4"
     val_hr_dir = "/Users/sydg/Documents/数据集/DIV2K/val/DIV2K_valid_HR"
     val_lr_dir = "/Users/sydg/Documents/数据集/DIV2K/val/DIV2K_valid_LR_bicubic/X4"
 
-    # 数据加载
     train_dataset = SRDataset(hr_dir=train_hr_dir, lr_dir=train_lr_dir, crop_size=512)
-    val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512)  # 验证集不需要随机裁剪可设为None
+    val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512)
     train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
     val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
 
-    # 模型、损失函数和优化器
     model = FeatureFusionSR().to(device)
-    criterion = nn.L1Loss()
+    criterion_l1 = nn.L1Loss()
+    criterion_perceptual = PerceptualLoss(device)
     optimizer = optim.Adam(model.parameters(), lr=1e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
 
-    # 训练和验证
-    train_and_validate(model, train_loader, val_loader, criterion, optimizer, device, num_epochs=100)
+    train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler, device, num_epochs=100)
 
-    # 保存最终模型
     torch.save(model.state_dict(), "models/final_model.pth")
-    print("最终模型已保存为 models/final_model.pth")
+    print("最终模型保存为 models/final_model.pth")
