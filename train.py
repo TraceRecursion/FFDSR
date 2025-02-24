@@ -135,11 +135,13 @@ def train(model, dataloader, criterion, optimizer, device, num_epochs=100):
     model.train()
     total_steps = len(dataloader)
 
+    # 创建models文件夹（如果不存在）
+    os.makedirs("models", exist_ok=True)
+
     for epoch in range(num_epochs):
         running_loss = 0.0
         epoch_start_time = time.time()
 
-        # 使用tqdm创建进度条
         progress_bar = tqdm(dataloader, desc=f"Epoch [{epoch + 1}/{num_epochs}]", total=total_steps)
 
         for i, (lr_img, hr_img) in enumerate(progress_bar):
@@ -153,15 +155,15 @@ def train(model, dataloader, criterion, optimizer, device, num_epochs=100):
 
             running_loss += loss.item()
 
-            # 更新进度条信息
             avg_loss = running_loss / (i + 1)
             elapsed_time = time.time() - epoch_start_time
             steps_remaining = total_steps - (i + 1)
-            eta = (elapsed_time / (i + 1)) * steps_remaining  # 预计剩余时间（秒）
+            eta = (elapsed_time / (i + 1)) * steps_remaining
             eta_str = f"{int(eta // 60)}m {int(eta % 60)}s"
             progress_bar.set_postfix({'Loss': f'{avg_loss:.4f}', 'ETA': eta_str})
 
-        torch.save(model.state_dict(), f"model_epoch_{epoch + 1}.pth")
+        # 保存模型到models文件夹
+        torch.save(model.state_dict(), f"models/model_epoch_{epoch + 1}.pth")
     print("训练完成！")
 
 
@@ -184,7 +186,7 @@ if __name__ == "__main__":
 
     # 数据加载
     dataset = SRDataset(hr_dir=hr_dir, lr_dir=lr_dir, crop_size=512)
-    dataloader = DataLoader(dataset, batch_size=64, shuffle=True)
+    dataloader = DataLoader(dataset, batch_size=16, shuffle=True)
 
     # 模型、损失函数和优化器
     model = FeatureFusionSR().to(device)
@@ -194,6 +196,7 @@ if __name__ == "__main__":
     # 训练
     train(model, dataloader, criterion, optimizer, device, num_epochs=100)
 
-    # 保存最终模型
-    torch.save(model.state_dict(), "final_model.pth")
-    print("最终模型已保存为 final_model.pth")
+    # 保存最终模型到models文件夹
+    os.makedirs("models", exist_ok=True)
+    torch.save(model.state_dict(), "models/final_model.pth")
+    print("最终模型已保存为 models/final_model.pth")
