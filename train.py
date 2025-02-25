@@ -10,7 +10,8 @@ from PIL import Image
 import os
 import numpy as np
 from tqdm import tqdm
-import time
+from torch.amp import autocast, GradScaler
+from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
 # 获取当前文件所在目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,10 +24,7 @@ train_lr_dir = os.path.join(base_data_dir, 'DIV2K/train/DIV2K_train_LR_bicubic/X
 val_hr_dir = os.path.join(base_data_dir, 'DIV2K/val/DIV2K_valid_HR')
 val_lr_dir = os.path.join(base_data_dir, 'DIV2K/val/DIV2K_valid_LR_bicubic/X4')
 
-# 修改导入方式
-from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
-
-# 1. 数据准备（不变）
+# 1. 数据准备
 class SRDataset(Dataset):
     def __init__(self, hr_dir, lr_dir, crop_size=None):
         self.hr_dir = hr_dir
@@ -60,7 +58,7 @@ class SRDataset(Dataset):
 
         return lr_img, hr_img
 
-# 2. 模型设计（不变）
+# 2. 模型设计
 class SEBlock(nn.Module):
     def __init__(self, channels, reduction=16):
         super(SEBlock, self).__init__()
@@ -112,33 +110,40 @@ class FeatureFusionSR(nn.Module):
 
         self.se_block = SEBlock(128)
         self.fusion_conv = nn.Conv2d(128, 256, kernel_size=1)
-
         self.sr_net = EDSR()
 
-    def forward(self, lr_img):
+    def forward_semantic(self, lr_img):
         with torch.no_grad():
             semantic_output = self.semantic_model(lr_img)['out']
         semantic_labels = semantic_output.argmax(dim=1)
         semantic_feature = self.embedding(semantic_labels).permute(0, 3, 1, 2)
+        return semantic_feature
 
+    def forward_low_level(self, lr_img):
         x = self.resnet_conv1(lr_img)
         x = self.resnet_bn1(x)
         x = self.resnet_relu(x)
         low_level_feature = self.resnet_layer1(x)
+        return low_level_feature
 
+    def forward_fusion_and_sr(self, semantic_feature, low_level_feature):
         target_h, target_w = low_level_feature.shape[2:]
         semantic_feature = F.interpolate(
             semantic_feature, size=(target_h, target_w), mode='bilinear', align_corners=False
         )
-
         fused_feature = torch.cat([semantic_feature, low_level_feature], dim=1)
         fused_feature = self.se_block(fused_feature)
         fused_feature = self.fusion_conv(fused_feature)
-
         sr_img = self.sr_net(fused_feature)
         return sr_img
 
-# 3. 感知损失定义
+    def forward(self, lr_img):
+        semantic_feature = self.forward_semantic(lr_img)
+        low_level_feature = self.forward_low_level(lr_img)
+        sr_img = self.forward_fusion_and_sr(semantic_feature, low_level_feature)
+        return sr_img
+
+# 3. 感知损失定义（简化，只用 conv1_2）
 class PerceptualLoss(nn.Module):
     def __init__(self, device):
         super(PerceptualLoss, self).__init__()
@@ -146,16 +151,15 @@ class PerceptualLoss(nn.Module):
         self.vgg = vgg.to(device)
         for param in self.vgg.parameters():
             param.requires_grad = False
-        self.layers = {'3': 64, '8': 128, '17': 256}  # conv1_2, conv2_2, conv3_4
+        self.layer = '3'  # 只用 conv1_2 层
 
     def forward(self, sr_img, hr_img):
         loss = 0.0
         for name, module in self.vgg.named_children():
             sr_img = module(sr_img)
             hr_img = module(hr_img)
-            if name in self.layers:
-                loss += F.mse_loss(sr_img, hr_img)
-            if name == '17':  # 到 conv3_4 停止
+            if name == self.layer:
+                loss = F.mse_loss(sr_img, hr_img)
                 break
         return loss
 
@@ -164,6 +168,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
     model.to(device)
     os.makedirs("models", exist_ok=True)
 
+    scaler = GradScaler('cuda')
     best_val_loss = float('inf')
     psnr = PeakSignalNoiseRatio().to(device)
     ssim = StructuralSimilarityIndexMeasure().to(device)
@@ -173,20 +178,31 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         running_loss = 0.0
         progress_bar = tqdm(train_loader, desc=f"Epoch [{epoch + 1}/{num_epochs}] Training")
 
-        for lr_img, hr_img in progress_bar:
+        for i, (lr_img, hr_img) in enumerate(progress_bar):
             lr_img, hr_img = lr_img.to(device), hr_img.to(device)
 
             optimizer.zero_grad()
-            sr_img = model(lr_img)
-            l1_loss = criterion_l1(sr_img, hr_img)
-            perc_loss = criterion_perceptual(sr_img, hr_img)
-            loss = l1_loss + 0.1 * perc_loss
-            loss.backward()
+            with autocast('cuda'):
+                # 分阶段计算并逐步释放
+                semantic_feature = model.forward_semantic(lr_img)
+                low_level_feature = model.forward_low_level(lr_img)
+                sr_img = model.forward_fusion_and_sr(semantic_feature, low_level_feature)
+                del semantic_feature, low_level_feature  # 提前释放
+
+                l1_loss = criterion_l1(sr_img, hr_img)
+                perc_loss = criterion_perceptual(sr_img, hr_img)
+                loss = l1_loss + 0.1 * perc_loss
+                del l1_loss, perc_loss  # 释放损失中间变量
+
+            scaler.scale(loss).backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-            optimizer.step()
+            scaler.step(optimizer)
+            scaler.update()
 
             running_loss += loss.item()
-            avg_loss = running_loss / (len(progress_bar) + 1)
+            del sr_img, loss  # 释放最终输出和损失
+
+            avg_loss = running_loss / (i + 1)
             progress_bar.set_postfix({'Train Loss': f'{avg_loss:.4f}'})
 
         train_loss = running_loss / len(train_loader)
@@ -199,13 +215,21 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         with torch.no_grad():
             for lr_img, hr_img in val_loader:
                 lr_img, hr_img = lr_img.to(device), hr_img.to(device)
-                sr_img = model(lr_img)
-                l1_loss = criterion_l1(sr_img, hr_img)
-                perc_loss = criterion_perceptual(sr_img, hr_img)
-                loss = l1_loss + 0.1 * perc_loss
+                with autocast('cuda'):
+                    semantic_feature = model.forward_semantic(lr_img)
+                    low_level_feature = model.forward_low_level(lr_img)
+                    sr_img = model.forward_fusion_and_sr(semantic_feature, low_level_feature)
+                    del semantic_feature, low_level_feature
+
+                    l1_loss = criterion_l1(sr_img, hr_img)
+                    perc_loss = criterion_perceptual(sr_img, hr_img)
+                    loss = l1_loss + 0.1 * perc_loss
+                    del l1_loss, perc_loss
+
                 val_loss += loss.item()
                 val_psnr += psnr(sr_img, hr_img).item()
                 val_ssim += ssim(sr_img, hr_img).item()
+                del sr_img, loss
 
         val_loss = val_loss / len(val_loader)
         val_psnr = val_psnr / len(val_loader)
@@ -220,6 +244,8 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             torch.save(model.state_dict(), f"models/model_epoch_{epoch + 1}.pth")
 
         print(f"Epoch [{epoch + 1}/{num_epochs}] - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}")
+        if torch.cuda.is_available():
+            print(f"GPU Memory Allocated: {torch.cuda.memory_allocated(device) / 1024**3:.2f} GB")
 
     print("训练完成！")
 
@@ -237,8 +263,8 @@ if __name__ == "__main__":
 
     train_dataset = SRDataset(hr_dir=train_hr_dir, lr_dir=train_lr_dir, crop_size=512)
     val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512)
-    train_loader = DataLoader(train_dataset, batch_size=24, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=24, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=30, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=30, shuffle=False, num_workers=4, pin_memory=True)
 
     model = FeatureFusionSR().to(device)
     criterion_l1 = nn.L1Loss()
