@@ -5,7 +5,6 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 from torchvision.models.segmentation import deeplabv3_resnet101
-from torchvision.models import resnet18
 from PIL import Image
 import os
 import numpy as np
@@ -15,10 +14,7 @@ from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMe
 
 # 获取当前文件所在目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
-
-# 数据集基础路径
 base_data_dir = os.path.join(current_dir, '../../Documents/数据集')
-
 train_hr_dir = os.path.join(base_data_dir, 'DIV2K/train/DIV2K_train_HR')
 train_lr_dir = os.path.join(base_data_dir, 'DIV2K/train/DIV2K_train_LR_bicubic/X4')
 val_hr_dir = os.path.join(base_data_dir, 'DIV2K/val/DIV2K_valid_HR')
@@ -44,7 +40,6 @@ class SRDataset(Dataset):
 
         if self.crop_size:
             hr_w, hr_h = hr_img.size
-            lr_w, lr_h = lr_img.size
             max_x = hr_w - self.crop_size
             max_y = hr_h - self.crop_size
             if max_x > 0 and max_y > 0:
@@ -55,66 +50,114 @@ class SRDataset(Dataset):
 
         hr_img = self.to_tensor(hr_img)
         lr_img = self.to_tensor(lr_img)
-
         return lr_img, hr_img
 
 # 2. 模型设计
-class SEBlock(nn.Module):
+class ChannelAttention(nn.Module):
     def __init__(self, channels, reduction=16):
-        super(SEBlock, self).__init__()
+        super(ChannelAttention, self).__init__()
         self.avg_pool = nn.AdaptiveAvgPool2d(1)
+        self.max_pool = nn.AdaptiveMaxPool2d(1)
         self.fc = nn.Sequential(
             nn.Linear(channels, channels // reduction),
             nn.ReLU(inplace=True),
-            nn.Linear(channels // reduction, channels),
-            nn.Sigmoid()
+            nn.Linear(channels // reduction, channels)
         )
+        self.sigmoid = nn.Sigmoid()
 
     def forward(self, x):
         b, c, _, _ = x.size()
-        y = self.avg_pool(x).view(b, c)
-        y = self.fc(y).view(b, c, 1, 1)
-        return x * y
+        avg_out = self.fc(self.avg_pool(x).view(b, c))
+        max_out = self.fc(self.max_pool(x).view(b, c))
+        return self.sigmoid(avg_out + max_out).view(b, c, 1, 1) * x
 
-class EDSR(nn.Module):
-    def __init__(self, in_channels=256, out_channels=3, num_blocks=8, upscale_factor=4):
-        super(EDSR, self).__init__()
+class SpatialAttention(nn.Module):
+    def __init__(self):
+        super(SpatialAttention, self).__init__()
+        self.conv = nn.Conv2d(2, 1, kernel_size=7, padding=3)
+        self.sigmoid = nn.Sigmoid()
+
+    def forward(self, x):
+        avg_out = torch.mean(x, dim=1, keepdim=True)
+        max_out, _ = torch.max(x, dim=1, keepdim=True)
+        out = torch.cat([avg_out, max_out], dim=1)
+        return self.sigmoid(self.conv(out)) * x
+
+class CBAM(nn.Module):
+    def __init__(self, channels, reduction=16):
+        super(CBAM, self).__init__()
+        self.channel_att = ChannelAttention(channels, reduction)
+        self.spatial_att = SpatialAttention()
+
+    def forward(self, x):
+        x = self.channel_att(x)
+        x = self.spatial_att(x)
+        return x
+
+class ResBlock(nn.Module):
+    def __init__(self, channels):
+        super(ResBlock, self).__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+
+    def forward(self, x):
+        residual = x
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+        out = self.conv2(out)
+        out = self.bn2(out)
+        return residual + 0.1 * out  # 添加残差缩放因子
+
+class EnhancedEDSR(nn.Module):
+    def __init__(self, in_channels=256, out_channels=3, num_blocks=64):
+        super(EnhancedEDSR, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
         self.body = nn.Sequential(
-            *[nn.Sequential(
-                nn.Conv2d(64, 64, kernel_size=3, padding=1),
-                nn.ReLU(inplace=True)
-            ) for _ in range(num_blocks)]
+            *[ResBlock(64) for _ in range(num_blocks)]
         )
-        self.conv2 = nn.Conv2d(64, out_channels * (upscale_factor ** 2), kernel_size=3, padding=1)
-        self.pixel_shuffle = nn.PixelShuffle(upscale_factor)
+        self.conv2 = nn.Conv2d(64, 64 * 4, kernel_size=3, padding=1)
+        self.up1 = nn.PixelShuffle(2)
+        self.conv_up1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 64 * 4, kernel_size=3, padding=1)
+        self.up2 = nn.PixelShuffle(2)
+        self.conv_up2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv_out = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
 
     def forward(self, x):
         x = self.conv1(x)
         x = x + self.body(x)
         x = self.conv2(x)
-        x = self.pixel_shuffle(x)
-        return x
+        x = self.up1(x)
+        x = self.conv_up1(x)
+        x = self.conv3(x)
+        x = self.up2(x)
+        x = self.conv_up2(x)
+        x = self.conv_out(x)
+        return torch.sigmoid(x)
 
 class FeatureFusionSR(nn.Module):
     def __init__(self):
         super(FeatureFusionSR, self).__init__()
-        self.semantic_model = deeplabv3_resnet101(weights='DEFAULT').eval()
+        self.semantic_model = deeplabv3_resnet101(weights='DEFAULT')
         self.embedding = nn.Embedding(21, 64)
-
-        self.resnet = resnet18(weights='DEFAULT')
+        self.resnet = models.resnet50(weights='DEFAULT')
         self.resnet_conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=1, padding=3)
         self.resnet_bn1 = self.resnet.bn1
         self.resnet_relu = self.resnet.relu
+        self.resnet_maxpool = nn.Identity()
         self.resnet_layer1 = self.resnet.layer1
-
-        self.se_block = SEBlock(128)
-        self.fusion_conv = nn.Conv2d(128, 256, kernel_size=1)
-        self.sr_net = EDSR()
+        self.resnet_layer2 = self.resnet.layer2
+        self.resnet_layer3 = self.resnet.layer3
+        self.fusion_conv = nn.Conv2d(1856, 256, kernel_size=1)
+        self.cbam = CBAM(256)
+        self.sr_net = EnhancedEDSR()
 
     def forward_semantic(self, lr_img):
-        with torch.no_grad():
-            semantic_output = self.semantic_model(lr_img)['out']
+        semantic_output = self.semantic_model(lr_img)['out']
         semantic_labels = semantic_output.argmax(dim=1)
         semantic_feature = self.embedding(semantic_labels).permute(0, 3, 1, 2)
         return semantic_feature
@@ -123,17 +166,21 @@ class FeatureFusionSR(nn.Module):
         x = self.resnet_conv1(lr_img)
         x = self.resnet_bn1(x)
         x = self.resnet_relu(x)
-        low_level_feature = self.resnet_layer1(x)
+        x = self.resnet_maxpool(x)
+        layer1_out = self.resnet_layer1(x)
+        layer2_out = self.resnet_layer2(layer1_out)
+        layer3_out = self.resnet_layer3(layer2_out)
+        layer2_out = F.interpolate(layer2_out, size=layer1_out.shape[2:], mode='bilinear', align_corners=False)
+        layer3_out = F.interpolate(layer3_out, size=layer1_out.shape[2:], mode='bilinear', align_corners=False)
+        low_level_feature = torch.cat([layer1_out, layer2_out, layer3_out], dim=1)
         return low_level_feature
 
     def forward_fusion_and_sr(self, semantic_feature, low_level_feature):
         target_h, target_w = low_level_feature.shape[2:]
-        semantic_feature = F.interpolate(
-            semantic_feature, size=(target_h, target_w), mode='bilinear', align_corners=False
-        )
+        semantic_feature = F.interpolate(semantic_feature, size=(target_h, target_w), mode='bilinear', align_corners=False)
         fused_feature = torch.cat([semantic_feature, low_level_feature], dim=1)
-        fused_feature = self.se_block(fused_feature)
         fused_feature = self.fusion_conv(fused_feature)
+        fused_feature = self.cbam(fused_feature)
         sr_img = self.sr_net(fused_feature)
         return sr_img
 
@@ -143,31 +190,47 @@ class FeatureFusionSR(nn.Module):
         sr_img = self.forward_fusion_and_sr(semantic_feature, low_level_feature)
         return sr_img
 
-# 3. 感知损失定义（简化，只用 conv1_2）
+# 3. 感知损失
 class PerceptualLoss(nn.Module):
     def __init__(self, device):
         super(PerceptualLoss, self).__init__()
-        vgg = models.vgg19(weights='DEFAULT').features.eval()
-        self.vgg = vgg.to(device)
+        vgg = models.vgg19(weights='DEFAULT').features.eval().to(device)
+        self.vgg = vgg
+        self.layer = '3'
+        self.semantic_model = deeplabv3_resnet101(weights='DEFAULT').eval().to(device)
         for param in self.vgg.parameters():
             param.requires_grad = False
-        self.layer = '3'  # 只用 conv1_2 层
+        for param in self.semantic_model.parameters():
+            param.requires_grad = False
 
-    def forward(self, sr_img, hr_img):
-        loss = 0.0
-        for name, module in self.vgg.named_children():
-            sr_img = module(sr_img)
-            hr_img = module(hr_img)
-            if name == self.layer:
-                loss = F.mse_loss(sr_img, hr_img)
-                break
-        return loss
+    def forward(self, sr_img, hr_img, lr_img):
+        sr_feat = self.vgg(sr_img)
+        hr_feat = self.vgg(hr_img)
+        perc_loss = F.mse_loss(sr_feat, hr_feat)
+
+        sr_semantic = self.semantic_model(sr_img)['out']
+        lr_semantic = self.semantic_model(lr_img)['out']
+        sr_semantic = F.interpolate(sr_semantic, size=lr_semantic.shape[2:], mode='bilinear', align_corners=False)
+
+        # 调试输出
+        if torch.any(torch.isnan(sr_semantic)) or torch.any(torch.isnan(lr_semantic)):
+            print("语义输出中检测到 NaN！")
+            print(f"SR Semantic before norm: min={sr_semantic.min().item():.4f}, max={sr_semantic.max().item():.4f}")
+            print(f"LR Semantic before norm: min={lr_semantic.min().item():.4f}, max={lr_semantic.max().item():.4f}")
+
+        # 改进标准化：限制logits范围
+        sr_semantic = torch.tanh(sr_semantic)  # 限制到[-1, 1]
+        lr_semantic = torch.tanh(lr_semantic)
+        sr_semantic = (sr_semantic - sr_semantic.mean()) / (sr_semantic.std() + 1e-8)
+        lr_semantic = (lr_semantic - lr_semantic.mean()) / (lr_semantic.std() + 1e-8)
+
+        semantic_loss = F.kl_div(F.log_softmax(sr_semantic, dim=1), F.softmax(lr_semantic, dim=1), reduction='batchmean')
+        return perc_loss, semantic_loss
 
 # 4. 训练与评估
 def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler, device, num_epochs=100):
     model.to(device)
     os.makedirs("models", exist_ok=True)
-
     scaler = GradScaler('cuda')
     best_val_loss = float('inf')
     psnr = PeakSignalNoiseRatio().to(device)
@@ -183,25 +246,26 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
 
             optimizer.zero_grad()
             with autocast('cuda'):
-                # 分阶段计算并逐步释放
-                semantic_feature = model.forward_semantic(lr_img)
-                low_level_feature = model.forward_low_level(lr_img)
-                sr_img = model.forward_fusion_and_sr(semantic_feature, low_level_feature)
-                del semantic_feature, low_level_feature  # 提前释放
+                sr_img = model(lr_img)
+                if i == 0:
+                    print(f"Epoch {epoch + 1}, Batch {i + 1}:")
+                    print(f"LR Img: min={lr_img.min().item():.4f}, max={lr_img.max().item():.4f}")
+                    print(f"HR Img: min={hr_img.min().item():.4f}, max={hr_img.max().item():.4f}")
+                    print(f"SR Img: min={sr_img.min().item():.4f}, max={sr_img.max().item():.4f}, mean={sr_img.mean().item():.4f}, std={sr_img.std().item():.4f}")
 
                 l1_loss = criterion_l1(sr_img, hr_img)
-                perc_loss = criterion_perceptual(sr_img, hr_img)
-                loss = l1_loss + 0.1 * perc_loss
-                del l1_loss, perc_loss  # 释放损失中间变量
+                perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img)
+                loss = l1_loss + 0.1 * perc_loss + 0.0001 * semantic_loss
+
+                if i == 0:
+                    print(f"L1 Loss: {l1_loss.item():.4f}, Perc Loss: {perc_loss.item():.4f}, Semantic Loss: {semantic_loss.item():.4f}, Total Loss: {loss.item():.4f}")
 
             scaler.scale(loss).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)  # 增强梯度裁剪
             scaler.step(optimizer)
             scaler.update()
 
             running_loss += loss.item()
-            del sr_img, loss  # 释放最终输出和损失
-
             avg_loss = running_loss / (i + 1)
             progress_bar.set_postfix({'Train Loss': f'{avg_loss:.4f}'})
 
@@ -216,38 +280,30 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             for lr_img, hr_img in val_loader:
                 lr_img, hr_img = lr_img.to(device), hr_img.to(device)
                 with autocast('cuda'):
-                    semantic_feature = model.forward_semantic(lr_img)
-                    low_level_feature = model.forward_low_level(lr_img)
-                    sr_img = model.forward_fusion_and_sr(semantic_feature, low_level_feature)
-                    del semantic_feature, low_level_feature
-
+                    sr_img = model(lr_img)
                     l1_loss = criterion_l1(sr_img, hr_img)
-                    perc_loss = criterion_perceptual(sr_img, hr_img)
-                    loss = l1_loss + 0.1 * perc_loss
-                    del l1_loss, perc_loss
+                    perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img)
+                    loss = l1_loss + 0.1 * perc_loss + 0.0001 * semantic_loss
 
                 val_loss += loss.item()
                 val_psnr += psnr(sr_img, hr_img).item()
                 val_ssim += ssim(sr_img, hr_img).item()
-                del sr_img, loss
 
-        val_loss = val_loss / len(val_loader)
-        val_psnr = val_psnr / len(val_loader)
-        val_ssim = val_ssim / len(val_loader)
+        val_loss /= len(val_loader)
+        val_psnr /= len(val_loader)
+        val_ssim /= len(val_loader)
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
             torch.save(model.state_dict(), "models/best_model.pth")
-            print(f"新最佳模型在 epoch {epoch + 1} 处保存, Val Loss: {val_loss:.4f}, PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}")
+            print(f"New best model saved at epoch {epoch + 1}, Val Loss: {val_loss:.4f}, PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}")
 
         if (epoch + 1) % 5 == 0:
             torch.save(model.state_dict(), f"models/model_epoch_{epoch + 1}.pth")
 
         print(f"Epoch [{epoch + 1}/{num_epochs}] - Train Loss: {train_loss:.4f}, Val Loss: {val_loss:.4f}, PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}")
-        if torch.cuda.is_available():
-            print(f"GPU Memory Allocated: {torch.cuda.memory_allocated(device) / 1024**3:.2f} GB")
 
-    print("训练完成！")
+    print("Training completed!")
 
 # 主函数
 if __name__ == "__main__":
@@ -263,14 +319,14 @@ if __name__ == "__main__":
 
     train_dataset = SRDataset(hr_dir=train_hr_dir, lr_dir=train_lr_dir, crop_size=512)
     val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512)
-    train_loader = DataLoader(train_dataset, batch_size=30, shuffle=True, num_workers=4, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=30, shuffle=False, num_workers=4, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=4, pin_memory=True)
+    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=4, pin_memory=True)
 
     model = FeatureFusionSR().to(device)
     criterion_l1 = nn.L1Loss()
     criterion_perceptual = PerceptualLoss(device)
-    optimizer = optim.Adam(model.parameters(), lr=1e-4)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=100)
+    optimizer = optim.Adam(model.parameters(), lr=5e-4)  # 调整学习率
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
 
     train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler, device, num_epochs=100)
 
