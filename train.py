@@ -102,7 +102,7 @@ class FeatureFusionSR(nn.Module):
     def __init__(self):
         super(FeatureFusionSR, self).__init__()
         self.semantic_model = deeplabv3_resnet101(weights='DEFAULT').eval()
-        self.embedding = nn.Embedding(19, 64)
+        self.embedding = nn.Embedding(21, 64)
 
         self.resnet = resnet18(weights='DEFAULT')
         self.resnet_conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=1, padding=3)
@@ -235,15 +235,10 @@ if __name__ == "__main__":
         device = torch.device("cpu")
         print("没有可用的GPU，使用设备: CPU")
 
-    # train_hr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_HR"
-    # train_lr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_LR_bicubic/X4"
-    # val_hr_dir = "/Users/sydg/Documents/数据集/DIV2K/val/DIV2K_valid_HR"
-    # val_lr_dir = "/Users/sydg/Documents/数据集/DIV2K/val/DIV2K_valid_LR_bicubic/X4"
-
     train_dataset = SRDataset(hr_dir=train_hr_dir, lr_dir=train_lr_dir, crop_size=512)
     val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512)
-    train_loader = DataLoader(train_dataset, batch_size=16, shuffle=True)
-    val_loader = DataLoader(val_dataset, batch_size=16, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size=24, shuffle=True)
+    val_loader = DataLoader(val_dataset, batch_size=24, shuffle=False)
 
     model = FeatureFusionSR().to(device)
     criterion_l1 = nn.L1Loss()
