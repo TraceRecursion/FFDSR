@@ -1,9 +1,19 @@
 import os
 import cv2
 
-# 输入和输出路径
-hr_img_root = '/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_HR'  # 高分辨率图像路径
-lr_img_root = '/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_LR_bicubic/X4'  # 生成的 X4 低分辨率图像路径
+# 获取当前文件所在目录
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+base_data_dir = os.path.join(current_dir, '../../../Documents/数据集')
+cityscapes_base = os.path.join(base_data_dir, 'DIV2K/train')
+hr_img_root = os.path.join(cityscapes_base, 'DIV2K_train_HR')
+lr_img_root = os.path.join(cityscapes_base, 'DIV2K_train_LR_bicubic/X4')
+
+# 添加路径验证
+if not os.path.exists(hr_img_root):
+    raise FileNotFoundError(f"HR图像路径不存在: {hr_img_root}")
+if not os.path.exists(lr_img_root):
+    raise FileNotFoundError(f"LR图像路径不存在: {lr_img_root}")
 
 # 创建输出目录
 os.makedirs(lr_img_root, exist_ok=True)

@@ -11,6 +11,18 @@ import os
 import numpy as np
 from tqdm import tqdm
 import time
+
+# 获取当前文件所在目录
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+# 数据集基础路径
+base_data_dir = os.path.join(current_dir, '../../Documents/数据集')
+
+train_hr_dir = os.path.join(base_data_dir, 'DIV2K/train/DIV2K_train_HR')
+train_lr_dir = os.path.join(base_data_dir, 'DIV2K/train/DIV2K_train_LR_bicubic/X4')
+val_hr_dir = os.path.join(base_data_dir, 'DIV2K/val/DIV2K_valid_HR')
+val_lr_dir = os.path.join(base_data_dir, 'DIV2K/val/DIV2K_valid_LR_bicubic/X4')
+
 # 修改导入方式
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 
@@ -223,10 +235,10 @@ if __name__ == "__main__":
         device = torch.device("cpu")
         print("没有可用的GPU，使用设备: CPU")
 
-    train_hr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_HR"
-    train_lr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_LR_bicubic/X4"
-    val_hr_dir = "/Users/sydg/Documents/数据集/DIV2K/val/DIV2K_valid_HR"
-    val_lr_dir = "/Users/sydg/Documents/数据集/DIV2K/val/DIV2K_valid_LR_bicubic/X4"
+    # train_hr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_HR"
+    # train_lr_dir = "/Users/sydg/Documents/数据集/DIV2K/train/DIV2K_train_LR_bicubic/X4"
+    # val_hr_dir = "/Users/sydg/Documents/数据集/DIV2K/val/DIV2K_valid_HR"
+    # val_lr_dir = "/Users/sydg/Documents/数据集/DIV2K/val/DIV2K_valid_LR_bicubic/X4"
 
     train_dataset = SRDataset(hr_dir=train_hr_dir, lr_dir=train_lr_dir, crop_size=512)
     val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512)

@@ -1,9 +1,19 @@
 import os
 import cv2
 
-# 输入和输出路径
-hr_img_root = '/Users/sydg/Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit/train'
-lr_img_root = '/Users/sydg/Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit/train_lr_x4'
+# 获取当前文件所在目录
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+base_data_dir = os.path.join(current_dir, '../../../Documents/数据集')
+cityscapes_base = os.path.join(base_data_dir, 'CitySpaces/leftImg8bit_trainvaltest/leftImg8bit')
+hr_img_root = os.path.join(cityscapes_base, 'train')
+lr_img_root = os.path.join(cityscapes_base, 'train_lr_x4')
+
+# 添加路径验证
+if not os.path.exists(hr_img_root):
+    raise FileNotFoundError(f"HR图像路径不存在: {hr_img_root}")
+if not os.path.exists(lr_img_root):
+    raise FileNotFoundError(f"LR图像路径不存在: {lr_img_root}")
 
 # 下采样函数
 def downsample_image(image_path, output_path, scale=4):
