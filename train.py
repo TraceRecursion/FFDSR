@@ -122,21 +122,36 @@ class EnhancedEDSR(nn.Module):
         self.conv2 = nn.Conv2d(64, 64 * 4, kernel_size=3, padding=1)
         self.up1 = nn.PixelShuffle(2)
         self.conv_up1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.att1 = CBAM(64)  # 添加注意力机制
         self.conv3 = nn.Conv2d(64, 64 * 4, kernel_size=3, padding=1)
         self.up2 = nn.PixelShuffle(2)
         self.conv_up2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.att2 = CBAM(64)  # 添加注意力机制
+        self.fusion = nn.Conv2d(128, 64, kernel_size=1)
         self.conv_out = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
+
+        # Kaiming初始化
+        self.apply(self._init_weights)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Conv2d):
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
 
     def forward(self, x):
         x = self.conv1(x)
         x = x + self.body(x)
-        x = self.conv2(x)
-        x = self.up1(x)
-        x = self.conv_up1(x)
-        x = self.conv3(x)
-        x = self.up2(x)
-        x = self.conv_up2(x)
-        x = self.conv_out(x)
+        x2 = self.conv2(x)
+        x2 = self.up1(x2)
+        x2 = self.conv_up1(x2)
+        x2 = self.att1(x2)
+        x3 = self.conv3(x2)
+        x3 = self.up2(x3)
+        x3 = self.conv_up2(x3)
+        x3 = self.att2(x3)
+        x_fused = self.fusion(torch.cat([F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False), x3], dim=1))
+        x = self.conv_out(x_fused)
         return torch.sigmoid(x)
 
 class FeatureFusionSR(nn.Module):
@@ -198,6 +213,8 @@ class PerceptualLoss(nn.Module):
         self.vgg = vgg
         self.layer = '3'
         self.semantic_model = deeplabv3_resnet101(weights='DEFAULT').eval().to(device)
+        self.mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
+        self.std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
         for param in self.vgg.parameters():
             param.requires_grad = False
         for param in self.semantic_model.parameters():
@@ -208,23 +225,23 @@ class PerceptualLoss(nn.Module):
         hr_feat = self.vgg(hr_img)
         perc_loss = F.mse_loss(sr_feat, hr_feat)
 
-        sr_semantic = self.semantic_model(sr_img)['out']
-        lr_semantic = self.semantic_model(lr_img)['out']
+        # 归一化输入到ImageNet标准
+        sr_img_norm = (sr_img - self.mean) / self.std
+        lr_img_norm = (lr_img - self.mean) / self.std
+        sr_semantic = self.semantic_model(sr_img_norm)['out']
+        lr_semantic = self.semantic_model(lr_img_norm)['out']
         sr_semantic = F.interpolate(sr_semantic, size=lr_semantic.shape[2:], mode='bilinear', align_corners=False)
 
-        # 调试输出
         if torch.any(torch.isnan(sr_semantic)) or torch.any(torch.isnan(lr_semantic)):
             print("语义输出中检测到 NaN！")
-            print(f"SR Semantic before norm: min={sr_semantic.min().item():.4f}, max={sr_semantic.max().item():.4f}")
-            print(f"LR Semantic before norm: min={lr_semantic.min().item():.4f}, max={lr_semantic.max().item():.4f}")
+            print(f"SR Semantic: min={sr_semantic.min().item():.4f}, max={sr_semantic.max().item():.4f}")
+            print(f"LR Semantic: min={lr_semantic.min().item():.4f}, max={lr_semantic.max().item():.4f}")
 
-        # 改进标准化：限制logits范围
-        sr_semantic = torch.tanh(sr_semantic)  # 限制到[-1, 1]
-        lr_semantic = torch.tanh(lr_semantic)
-        sr_semantic = (sr_semantic - sr_semantic.mean()) / (sr_semantic.std() + 1e-8)
-        lr_semantic = (lr_semantic - lr_semantic.mean()) / (lr_semantic.std() + 1e-8)
+        # 裁剪logits范围并简化损失
+        sr_semantic = torch.clamp(sr_semantic, -10, 10)
+        lr_semantic = torch.clamp(lr_semantic, -10, 10)
+        semantic_loss = F.mse_loss(sr_semantic, lr_semantic)
 
-        semantic_loss = F.kl_div(F.log_softmax(sr_semantic, dim=1), F.softmax(lr_semantic, dim=1), reduction='batchmean')
         return perc_loss, semantic_loss
 
 # 4. 训练与评估
@@ -255,13 +272,13 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
 
                 l1_loss = criterion_l1(sr_img, hr_img)
                 perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img)
-                loss = l1_loss + 0.1 * perc_loss + 0.0001 * semantic_loss
+                loss = 2.0 * l1_loss + 0.5 * perc_loss + 0.00005 * semantic_loss  # 增强L1权重
 
                 if i == 0:
                     print(f"L1 Loss: {l1_loss.item():.4f}, Perc Loss: {perc_loss.item():.4f}, Semantic Loss: {semantic_loss.item():.4f}, Total Loss: {loss.item():.4f}")
 
             scaler.scale(loss).backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.5)  # 增强梯度裁剪
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)  # 增强梯度裁剪
             scaler.step(optimizer)
             scaler.update()
 
@@ -270,7 +287,6 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             progress_bar.set_postfix({'Train Loss': f'{avg_loss:.4f}'})
 
         train_loss = running_loss / len(train_loader)
-        scheduler.step()
 
         model.eval()
         val_loss = 0.0
@@ -283,7 +299,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
                     sr_img = model(lr_img)
                     l1_loss = criterion_l1(sr_img, hr_img)
                     perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img)
-                    loss = l1_loss + 0.1 * perc_loss + 0.0001 * semantic_loss
+                    loss = 2.0 * l1_loss + 0.5 * perc_loss + 0.00005 * semantic_loss
 
                 val_loss += loss.item()
                 val_psnr += psnr(sr_img, hr_img).item()
@@ -292,6 +308,8 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         val_loss /= len(val_loader)
         val_psnr /= len(val_loader)
         val_ssim /= len(val_loader)
+
+        scheduler.step(val_loss)  # 在验证后调整学习率
 
         if val_loss < best_val_loss:
             best_val_loss = val_loss
@@ -325,8 +343,8 @@ if __name__ == "__main__":
     model = FeatureFusionSR().to(device)
     criterion_l1 = nn.L1Loss()
     criterion_perceptual = PerceptualLoss(device)
-    optimizer = optim.Adam(model.parameters(), lr=5e-4)  # 调整学习率
-    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.5)
+    optimizer = optim.Adam(model.parameters(), lr=2e-4)  # 降低学习率
+    scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler, device, num_epochs=100)
 
