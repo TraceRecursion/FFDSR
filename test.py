@@ -219,7 +219,7 @@ def test_super_resolution(model_path, test_dir, output_dir):
 # 主函数
 if __name__ == "__main__":
     # 配置路径
-    model_path = "models/final_model.pth"  # 训练好的模型路径
+    model_path = "models/best_model.pth"  # 训练好的模型路径
     test_dir = "test_images"              # 测试图片文件夹
     output_dir = "output_images"          # 输出文件夹
 

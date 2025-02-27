@@ -256,7 +256,7 @@ class FeatureFusionSR(nn.Module):
         return sr_img
 
 
-# 3. 感知损失（修复尺寸不匹配问题）
+# 3. 感知损失
 class PerceptualLoss(nn.Module):
     def __init__(self, device):
         super(PerceptualLoss, self).__init__()
@@ -281,7 +281,6 @@ class PerceptualLoss(nn.Module):
             lr_img_norm = (lr_img - self.mean) / self.std
             sr_semantic = self.semantic_model(sr_img_norm)['out']
             lr_semantic = self.semantic_model(lr_img_norm)['out']
-            # 将 sr_semantic 下采样到 lr_semantic 的分辨率
             sr_semantic = F.interpolate(sr_semantic, size=lr_semantic.shape[2:], mode='bilinear', align_corners=False)
             if torch.any(torch.isnan(sr_semantic)) or torch.any(torch.isnan(lr_semantic)):
                 print("语义输出中检测到 NaN！")
@@ -296,7 +295,7 @@ class PerceptualLoss(nn.Module):
         return perc_loss, semantic_loss
 
 
-# 4. 训练与评估
+# 4. 训练与评估（优化：预加载第一个训练 batch 和持久化 worker）
 def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler,
                        device, num_epochs=100, accumulation_steps=2):
     model.to(device)
@@ -306,12 +305,58 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
     psnr = PeakSignalNoiseRatio().to(device)
     ssim = StructuralSimilarityIndexMeasure().to(device)
 
+    # 预加载验证数据到 GPU
+    val_data = []
+    print("预加载验证数据到 GPU...")
+    with torch.no_grad():
+        for lr_img, hr_img in tqdm(val_loader, desc="加载验证数据"):
+            val_data.append((lr_img.to(device), hr_img.to(device)))
+    print("验证数据预加载完成！")
+
+    # 预热训练数据管道
+    print("预热训练数据管道...")
+    train_iter = iter(train_loader)
+    first_batch = next(train_iter)  # 提前加载第一个 batch
+    print("训练数据管道预热完成！")
+
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
         progress_bar = tqdm(train_loader, desc=f"第 [{epoch + 1}/{num_epochs}] 轮 训练中")
 
-        for i, (lr_img, hr_img) in enumerate(progress_bar):
+        # 手动处理第一个 batch
+        lr_img, hr_img = first_batch
+        lr_img, hr_img = lr_img.to(device), hr_img.to(device)
+        with autocast('cuda'):
+            sr_img = model(lr_img)
+            l1_loss = criterion_l1(sr_img, hr_img)
+            compute_semantic = True  # 第一个 batch 计算语义损失
+            perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
+            loss = (2.0 * l1_loss + 0.5 * perc_loss + 0.00005 * semantic_loss) / accumulation_steps
+
+            print(f"第 {epoch + 1} 轮, 第 1 批次:")
+            print(f"低分辨率图像: 最小值={lr_img.min().item():.4f}, 最大值={lr_img.max().item():.4f}")
+            print(f"高分辨率图像: 最小值={hr_img.min().item():.4f}, 最大值={hr_img.max().item():.4f}")
+            print(
+                f"超分辨率图像: 最小值={sr_img.min().item():.4f}, 最大值={sr_img.max().item():.4f}, "
+                f"平均值={sr_img.mean().item():.4f}, 标准差={sr_img.std().item():.4f}"
+            )
+            print(
+                f"L1 Loss: {l1_loss.item():.4f}, Perc Loss: {perc_loss.item():.4f}, "
+                f"Semantic Loss: {semantic_loss.item():.4f}, 总损失: {loss.item() * accumulation_steps:.4f}"
+            )
+
+        scaler.scale(loss).backward()
+        if accumulation_steps == 1:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=0.1)
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad()
+
+        running_loss += loss.item() * accumulation_steps
+
+        # 继续处理剩余 batch
+        for i, (lr_img, hr_img) in enumerate(progress_bar, start=1):  # 从第 1 个 batch 开始
             lr_img, hr_img = lr_img.to(device), hr_img.to(device)
 
             with autocast('cuda'):
@@ -320,19 +365,6 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
                 compute_semantic = (i % 5 == 0)
                 perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
                 loss = (2.0 * l1_loss + 0.5 * perc_loss + 0.00005 * semantic_loss) / accumulation_steps
-
-                if i == 0:
-                    print(f"第 {epoch + 1} 轮, 第 {i + 1} 批次:")
-                    print(f"低分辨率图像: 最小值={lr_img.min().item():.4f}, 最大值={lr_img.max().item():.4f}")
-                    print(f"高分辨率图像: 最小值={hr_img.min().item():.4f}, 最大值={hr_img.max().item():.4f}")
-                    print(
-                        f"超分辨率图像: 最小值={sr_img.min().item():.4f}, 最大值={sr_img.max().item():.4f}, "
-                        f"平均值={sr_img.mean().item():.4f}, 标准差={sr_img.std().item():.4f}"
-                    )
-                    print(
-                        f"L1 Loss: {l1_loss.item():.4f}, Perc Loss: {perc_loss.item():.4f}, "
-                        f"Semantic Loss: {semantic_loss.item():.4f}, 总损失: {loss.item() * accumulation_steps:.4f}"
-                    )
 
             scaler.scale(loss).backward()
 
@@ -353,8 +385,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         val_psnr = 0.0
         val_ssim = 0.0
         with torch.no_grad():
-            for lr_img, hr_img in val_loader:
-                lr_img, hr_img = lr_img.to(device), hr_img.to(device)
+            for lr_img, hr_img in val_data:
                 with autocast('cuda'):
                     sr_img = model(lr_img)
                     l1_loss = criterion_l1(sr_img, hr_img)
@@ -386,6 +417,11 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             f"PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}"
         )
 
+        # 为下一轮预加载第一个 batch
+        if epoch < num_epochs - 1:
+            train_iter = iter(train_loader)
+            first_batch = next(train_iter)
+
     print("训练完成！")
 
 
@@ -407,11 +443,13 @@ if __name__ == "__main__":
     print(f"验证集 HR 文件数: {len(os.listdir(val_hr_dir))}")
     print(f"验证集 LR 文件数: {len(os.listdir(val_lr_dir))}")
 
-    # 数据集加载到内存并使用缓存
+    # 数据集加载到内存并使用缓存（优化：持久化 worker）
     train_dataset = SRDataset(hr_dir=train_hr_dir, lr_dir=train_lr_dir, crop_size=512, use_cache=True)
     val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512, use_cache=True)
-    train_loader = DataLoader(train_dataset, batch_size=4, shuffle=True, num_workers=8, pin_memory=True)
-    val_loader = DataLoader(val_dataset, batch_size=4, shuffle=False, num_workers=8, pin_memory=True)
+    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=8, pin_memory=True,
+                              prefetch_factor=2, multiprocessing_context='spawn', persistent_workers=True)
+    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=8, pin_memory=True,
+                            prefetch_factor=2, multiprocessing_context='spawn', persistent_workers=True)
 
     model = FeatureFusionSR().to(device)
     criterion_l1 = nn.L1Loss()
