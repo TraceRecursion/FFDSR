@@ -11,6 +11,7 @@ import numpy as np
 from tqdm import tqdm
 from torch.amp import autocast, GradScaler
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+from torch.utils.tensorboard import SummaryWriter  # 加入 TensorBoard
 
 # 获取当前文件所在目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,6 +24,10 @@ val_lr_dir = os.path.join(base_data_dir, 'DIV2K/val/DIV2K_valid_LR_bicubic/X4')
 # 数据缓存目录
 cache_dir = os.path.join(current_dir, 'data_cache')
 os.makedirs(cache_dir, exist_ok=True)
+
+# TensorBoard 日志目录
+log_dir = os.path.join(current_dir, 'runs')
+os.makedirs(log_dir, exist_ok=True)
 
 
 # 1. 数据准备
@@ -91,7 +96,7 @@ class SRDataset(Dataset):
         return lr_img, hr_img
 
 
-# 2. 模型设计（保持不变）
+# 2. 模型设计
 class ChannelAttention(nn.Module):
     def __init__(self, channels, reduction=16):
         super(ChannelAttention, self).__init__()
@@ -215,9 +220,14 @@ class FeatureFusionSR(nn.Module):
         self.cbam = CBAM(256)
         self.sr_net = EnhancedEDSR()
 
+        # 冻结更多预训练层
         for param in self.semantic_model.backbone.parameters():
             param.requires_grad = False
         for param in self.resnet.parameters():
+            param.requires_grad = False
+        for param in self.resnet_layer1.parameters():  # 冻结 layer1
+            param.requires_grad = False
+        for param in self.resnet_layer2.parameters():  # 冻结 layer2
             param.requires_grad = False
 
     def forward_semantic(self, lr_img):
@@ -295,7 +305,7 @@ class PerceptualLoss(nn.Module):
         return perc_loss, semantic_loss
 
 
-# 4. 训练与评估（优化：预加载第一个训练 batch 和持久化 worker）
+# 4. 训练与评估（加入 TensorBoard 和学习率监控）
 def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler,
                        device, num_epochs=100, accumulation_steps=2):
     model.to(device)
@@ -304,6 +314,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
     best_val_loss = float('inf')
     psnr = PeakSignalNoiseRatio().to(device)
     ssim = StructuralSimilarityIndexMeasure().to(device)
+    writer = SummaryWriter(log_dir)  # 初始化 TensorBoard
 
     # 预加载验证数据到 GPU
     val_data = []
@@ -316,7 +327,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
     # 预热训练数据管道
     print("预热训练数据管道...")
     train_iter = iter(train_loader)
-    first_batch = next(train_iter)  # 提前加载第一个 batch
+    first_batch = next(train_iter)
     print("训练数据管道预热完成！")
 
     for epoch in range(num_epochs):
@@ -330,21 +341,19 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         with autocast('cuda'):
             sr_img = model(lr_img)
             l1_loss = criterion_l1(sr_img, hr_img)
-            compute_semantic = True  # 第一个 batch 计算语义损失
+            compute_semantic = True
             perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
             loss = (2.0 * l1_loss + 0.5 * perc_loss + 0.00005 * semantic_loss) / accumulation_steps
 
             print(f"第 {epoch + 1} 轮, 第 1 批次:")
-            print(f"低分辨率图像: 最小值={lr_img.min().item():.4f}, 最大值={lr_img.max().item():.4f}")
-            print(f"高分辨率图像: 最小值={hr_img.min().item():.4f}, 最大值={hr_img.max().item():.4f}")
-            print(
-                f"超分辨率图像: 最小值={sr_img.min().item():.4f}, 最大值={sr_img.max().item():.4f}, "
-                f"平均值={sr_img.mean().item():.4f}, 标准差={sr_img.std().item():.4f}"
-            )
-            print(
-                f"L1 Loss: {l1_loss.item():.4f}, Perc Loss: {perc_loss.item():.4f}, "
-                f"Semantic Loss: {semantic_loss.item():.4f}, 总损失: {loss.item() * accumulation_steps:.4f}"
-            )
+            print(f"低分辨率图像: 最小值={lr_img.min().item():.4f}, 最大值={lr_img.max().item():.4f}, "
+                  f"平均值={lr_img.mean().item():.4f}, 标准差={lr_img.std().item():.4f}")
+            print(f"高分辨率图像: 最小值={hr_img.min().item():.4f}, 最大值={hr_img.max().item():.4f}, "
+                  f"平均值={hr_img.mean().item():.4f}, 标准差={hr_img.std().item():.4f}")
+            print(f"超分辨率图像: 最小值={sr_img.min().item():.4f}, 最大值={sr_img.max().item():.4f}, "
+                  f"平均值={sr_img.mean().item():.4f}, 标准差={sr_img.std().item():.4f}")
+            print(f"L1 Loss: {l1_loss.item():.4f}, Perc Loss: {perc_loss.item():.4f}, "
+                  f"Semantic Loss: {semantic_loss.item():.4f}, 总损失: {loss.item() * accumulation_steps:.4f}")
 
         scaler.scale(loss).backward()
         if accumulation_steps == 1:
@@ -356,7 +365,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         running_loss += loss.item() * accumulation_steps
 
         # 继续处理剩余 batch
-        for i, (lr_img, hr_img) in enumerate(progress_bar, start=1):  # 从第 1 个 batch 开始
+        for i, (lr_img, hr_img) in enumerate(progress_bar, start=1):
             lr_img, hr_img = lr_img.to(device), hr_img.to(device)
 
             with autocast('cuda'):
@@ -400,6 +409,14 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         val_psnr /= len(val_loader)
         val_ssim /= len(val_loader)
 
+        # 记录到 TensorBoard
+        writer.add_scalar('Loss/Train', train_loss, epoch)
+        writer.add_scalar('Loss/Val', val_loss, epoch)
+        writer.add_scalar('PSNR/Val', val_psnr, epoch)
+        writer.add_scalar('SSIM/Val', val_ssim, epoch)
+        lr = optimizer.param_groups[0]['lr']
+        writer.add_scalar('Learning Rate', lr, epoch)
+
         scheduler.step(val_loss)
 
         if val_loss < best_val_loss:
@@ -412,9 +429,10 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         if (epoch + 1) % 5 == 0:
             torch.save(model.state_dict(), f"models/model_epoch_{epoch + 1}.pth")
 
+        # 打印学习率
         print(
             f"第 [{epoch + 1}/{num_epochs}] 轮 - 训练损失: {train_loss:.4f}, 验证损失: {val_loss:.4f}, "
-            f"PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}"
+            f"PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}, 学习率: {lr:.6f}"
         )
 
         # 为下一轮预加载第一个 batch
@@ -422,6 +440,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             train_iter = iter(train_loader)
             first_batch = next(train_iter)
 
+    writer.close()  # 关闭 TensorBoard
     print("训练完成！")
 
 
@@ -443,7 +462,7 @@ if __name__ == "__main__":
     print(f"验证集 HR 文件数: {len(os.listdir(val_hr_dir))}")
     print(f"验证集 LR 文件数: {len(os.listdir(val_lr_dir))}")
 
-    # 数据集加载到内存并使用缓存（优化：持久化 worker）
+    # 数据集加载到内存并使用缓存
     train_dataset = SRDataset(hr_dir=train_hr_dir, lr_dir=train_lr_dir, crop_size=512, use_cache=True)
     val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512, use_cache=True)
     train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=8, pin_memory=True,
