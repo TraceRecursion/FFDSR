@@ -11,7 +11,8 @@ import numpy as np
 from tqdm import tqdm
 from torch.amp import autocast, GradScaler
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
-from torch.utils.tensorboard import SummaryWriter  # 加入 TensorBoard
+from torch.utils.tensorboard import SummaryWriter
+from datetime import datetime  # 引入时间模块
 
 # 获取当前文件所在目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -25,8 +26,9 @@ val_lr_dir = os.path.join(base_data_dir, 'DIV2K/val/DIV2K_valid_LR_bicubic/X4')
 cache_dir = os.path.join(current_dir, 'data_cache')
 os.makedirs(cache_dir, exist_ok=True)
 
-# TensorBoard 日志目录
-log_dir = os.path.join(current_dir, 'runs')
+# TensorBoard 日志目录（每次运行唯一）
+timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+log_dir = os.path.join(current_dir, f'runs/run_{timestamp}')
 os.makedirs(log_dir, exist_ok=True)
 
 
@@ -167,17 +169,14 @@ class EnhancedEDSR(nn.Module):
         self.body = nn.Sequential(
             *[ResBlock(64) for _ in range(num_blocks)]
         )
-        self.conv2 = nn.Conv2d(64, 64 * 4, kernel_size=3, padding=1)
-        self.up1 = nn.PixelShuffle(2)
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.conv_up1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.att1 = CBAM(64)
-        self.conv3 = nn.Conv2d(64, 64 * 4, kernel_size=3, padding=1)
-        self.up2 = nn.PixelShuffle(2)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.conv_up2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.att2 = CBAM(64)
         self.fusion = nn.Conv2d(128, 64, kernel_size=1)
         self.conv_out = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
-
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -190,15 +189,14 @@ class EnhancedEDSR(nn.Module):
         x = self.conv1(x)
         x = x + self.body(x)
         x2 = self.conv2(x)
-        x2 = self.up1(x2)
+        x2 = F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False)
         x2 = self.conv_up1(x2)
         x2 = self.att1(x2)
         x3 = self.conv3(x2)
-        x3 = self.up2(x3)
+        x3 = F.interpolate(x3, scale_factor=2, mode='bilinear', align_corners=False)
         x3 = self.conv_up2(x3)
         x3 = self.att2(x3)
-        x_fused = self.fusion(
-            torch.cat([F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False), x3], dim=1))
+        x_fused = self.fusion(torch.cat([F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False), x3], dim=1))
         x = self.conv_out(x_fused)
         return torch.sigmoid(x)
 
@@ -220,14 +218,13 @@ class FeatureFusionSR(nn.Module):
         self.cbam = CBAM(256)
         self.sr_net = EnhancedEDSR()
 
-        # 冻结更多预训练层
         for param in self.semantic_model.backbone.parameters():
             param.requires_grad = False
         for param in self.resnet.parameters():
             param.requires_grad = False
-        for param in self.resnet_layer1.parameters():  # 冻结 layer1
+        for param in self.resnet_layer1.parameters():
             param.requires_grad = False
-        for param in self.resnet_layer2.parameters():  # 冻结 layer2
+        for param in self.resnet_layer2.parameters():
             param.requires_grad = False
 
     def forward_semantic(self, lr_img):
@@ -305,7 +302,7 @@ class PerceptualLoss(nn.Module):
         return perc_loss, semantic_loss
 
 
-# 4. 训练与评估（加入 TensorBoard 和学习率监控）
+# 4. 训练与评估
 def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler,
                        device, num_epochs=100, accumulation_steps=2):
     model.to(device)
@@ -314,9 +311,8 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
     best_val_loss = float('inf')
     psnr = PeakSignalNoiseRatio().to(device)
     ssim = StructuralSimilarityIndexMeasure().to(device)
-    writer = SummaryWriter(log_dir)  # 初始化 TensorBoard
+    writer = SummaryWriter(log_dir)
 
-    # 预加载验证数据到 GPU
     val_data = []
     print("预加载验证数据到 GPU...")
     with torch.no_grad():
@@ -324,7 +320,6 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             val_data.append((lr_img.to(device), hr_img.to(device)))
     print("验证数据预加载完成！")
 
-    # 预热训练数据管道
     print("预热训练数据管道...")
     train_iter = iter(train_loader)
     first_batch = next(train_iter)
@@ -335,7 +330,6 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         running_loss = 0.0
         progress_bar = tqdm(train_loader, desc=f"第 [{epoch + 1}/{num_epochs}] 轮 训练中")
 
-        # 手动处理第一个 batch
         lr_img, hr_img = first_batch
         lr_img, hr_img = lr_img.to(device), hr_img.to(device)
         with autocast('cuda'):
@@ -343,7 +337,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             l1_loss = criterion_l1(sr_img, hr_img)
             compute_semantic = True
             perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
-            loss = (2.0 * l1_loss + 0.5 * perc_loss + 0.00005 * semantic_loss) / accumulation_steps
+            loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.00005 * semantic_loss) / accumulation_steps
 
             print(f"第 {epoch + 1} 轮, 第 1 批次:")
             print(f"低分辨率图像: 最小值={lr_img.min().item():.4f}, 最大值={lr_img.max().item():.4f}, "
@@ -364,7 +358,6 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
 
         running_loss += loss.item() * accumulation_steps
 
-        # 继续处理剩余 batch
         for i, (lr_img, hr_img) in enumerate(progress_bar, start=1):
             lr_img, hr_img = lr_img.to(device), hr_img.to(device)
 
@@ -373,7 +366,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
                 l1_loss = criterion_l1(sr_img, hr_img)
                 compute_semantic = (i % 5 == 0)
                 perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
-                loss = (2.0 * l1_loss + 0.5 * perc_loss + 0.00005 * semantic_loss) / accumulation_steps
+                loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.00005 * semantic_loss) / accumulation_steps
 
             scaler.scale(loss).backward()
 
@@ -387,6 +380,10 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             avg_loss = running_loss / (i + 1)
             progress_bar.set_postfix({'训练损失': f'{avg_loss:.4f}'})
 
+            if i == 0 and epoch % 10 == 0:
+                writer.add_image('SR_Image', sr_img[0], epoch)
+                writer.add_image('HR_Image', hr_img[0], epoch)
+
         train_loss = running_loss / len(train_loader)
 
         model.eval()
@@ -399,7 +396,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
                     sr_img = model(lr_img)
                     l1_loss = criterion_l1(sr_img, hr_img)
                     perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic=True)
-                    loss = 2.0 * l1_loss + 0.5 * perc_loss + 0.00005 * semantic_loss
+                    loss = 2.0 * l1_loss + 1.0 * perc_loss + 0.00005 * semantic_loss
 
                 val_loss += loss.item()
                 val_psnr += psnr(sr_img, hr_img).item()
@@ -409,7 +406,6 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         val_psnr /= len(val_loader)
         val_ssim /= len(val_loader)
 
-        # 记录到 TensorBoard
         writer.add_scalar('Loss/Train', train_loss, epoch)
         writer.add_scalar('Loss/Val', val_loss, epoch)
         writer.add_scalar('PSNR/Val', val_psnr, epoch)
@@ -429,18 +425,16 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         if (epoch + 1) % 5 == 0:
             torch.save(model.state_dict(), f"models/model_epoch_{epoch + 1}.pth")
 
-        # 打印学习率
         print(
             f"第 [{epoch + 1}/{num_epochs}] 轮 - 训练损失: {train_loss:.4f}, 验证损失: {val_loss:.4f}, "
             f"PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}, 学习率: {lr:.6f}"
         )
 
-        # 为下一轮预加载第一个 batch
         if epoch < num_epochs - 1:
             train_iter = iter(train_loader)
             first_batch = next(train_iter)
 
-    writer.close()  # 关闭 TensorBoard
+    writer.close()
     print("训练完成！")
 
 
@@ -456,13 +450,11 @@ if __name__ == "__main__":
         device = torch.device("cpu")
         print("没有可用的GPU，使用设备: CPU")
 
-    # 验证数据集完整性
     print(f"训练集 HR 文件数: {len(os.listdir(train_hr_dir))}")
     print(f"训练集 LR 文件数: {len(os.listdir(train_lr_dir))}")
     print(f"验证集 HR 文件数: {len(os.listdir(val_hr_dir))}")
     print(f"验证集 LR 文件数: {len(os.listdir(val_lr_dir))}")
 
-    # 数据集加载到内存并使用缓存
     train_dataset = SRDataset(hr_dir=train_hr_dir, lr_dir=train_lr_dir, crop_size=512, use_cache=True)
     val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512, use_cache=True)
     train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=8, pin_memory=True,
