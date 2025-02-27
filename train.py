@@ -12,7 +12,7 @@ from tqdm import tqdm
 from torch.amp import autocast, GradScaler
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from torch.utils.tensorboard import SummaryWriter
-from datetime import datetime  # 引入时间模块
+from datetime import datetime
 
 # 获取当前文件所在目录
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -204,8 +204,9 @@ class EnhancedEDSR(nn.Module):
 class FeatureFusionSR(nn.Module):
     def __init__(self):
         super(FeatureFusionSR, self).__init__()
-        self.semantic_model = deeplabv3_resnet101(weights='DEFAULT')
-        self.embedding = nn.Embedding(21, 64)
+        # 使用 PyTorch 原生的 DeepLabv3_ResNet101，加载 COCO 91 类预训练权重
+        self.semantic_model = deeplabv3_resnet101(weights='COCO_WITH_VOC_LABELS_V1').eval()
+        self.embedding = nn.Embedding(91, 64)  # 调整为 91 类
         self.resnet = models.resnet50(weights='DEFAULT')
         self.resnet_conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=1, padding=3)
         self.resnet_bn1 = self.resnet.bn1
@@ -228,7 +229,7 @@ class FeatureFusionSR(nn.Module):
             param.requires_grad = False
 
     def forward_semantic(self, lr_img):
-        semantic_output = self.semantic_model(lr_img)['out']
+        semantic_output = self.semantic_model(lr_img)['out']  # 输出 91 类 logits
         semantic_labels = semantic_output.argmax(dim=1)
         semantic_feature = self.embedding(semantic_labels).permute(0, 3, 1, 2)
         return semantic_feature
@@ -270,7 +271,7 @@ class PerceptualLoss(nn.Module):
         vgg = models.vgg19(weights='DEFAULT').features.eval().to(device)
         self.vgg = vgg
         self.layer = '3'
-        self.semantic_model = deeplabv3_resnet101(weights='DEFAULT').eval().to(device)
+        self.semantic_model = deeplabv3_resnet101(weights='COCO_WITH_VOC_LABELS_V1').eval().to(device)  # 同步更新为 91 类
         self.mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
         self.std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
         for param in self.vgg.parameters():
@@ -289,13 +290,14 @@ class PerceptualLoss(nn.Module):
             sr_semantic = self.semantic_model(sr_img_norm)['out']
             lr_semantic = self.semantic_model(lr_img_norm)['out']
             sr_semantic = F.interpolate(sr_semantic, size=lr_semantic.shape[2:], mode='bilinear', align_corners=False)
-            if torch.any(torch.isnan(sr_semantic)) or torch.any(torch.isnan(lr_semantic)):
-                print("语义输出中检测到 NaN！")
+            # 标准化为概率分布
+            sr_semantic = F.softmax(sr_semantic, dim=1)
+            lr_semantic = F.softmax(lr_semantic, dim=1)
+            semantic_loss = F.mse_loss(sr_semantic, lr_semantic)
+            if torch.any(torch.isnan(semantic_loss)):
+                print("语义损失中检测到 NaN！")
                 print(f"SR Semantic: 最小值={sr_semantic.min().item():.4f}, 最大值={sr_semantic.max().item():.4f}")
                 print(f"LR Semantic: 最小值={lr_semantic.min().item():.4f}, 最大值={lr_semantic.max().item():.4f}")
-            sr_semantic = torch.clamp(sr_semantic, -10, 10)
-            lr_semantic = torch.clamp(lr_semantic, -10, 10)
-            semantic_loss = F.mse_loss(sr_semantic, lr_semantic)
         else:
             semantic_loss = torch.tensor(0.0, device=sr_img.device)
 
@@ -337,7 +339,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             l1_loss = criterion_l1(sr_img, hr_img)
             compute_semantic = True
             perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
-            loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.00005 * semantic_loss) / accumulation_steps
+            loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss) / accumulation_steps  # 语义权重提升到 0.5
 
             print(f"第 {epoch + 1} 轮, 第 1 批次:")
             print(f"低分辨率图像: 最小值={lr_img.min().item():.4f}, 最大值={lr_img.max().item():.4f}, "
@@ -366,7 +368,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
                 l1_loss = criterion_l1(sr_img, hr_img)
                 compute_semantic = (i % 5 == 0)
                 perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
-                loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.00005 * semantic_loss) / accumulation_steps
+                loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss) / accumulation_steps
 
             scaler.scale(loss).backward()
 
@@ -396,7 +398,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
                     sr_img = model(lr_img)
                     l1_loss = criterion_l1(sr_img, hr_img)
                     perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic=True)
-                    loss = 2.0 * l1_loss + 1.0 * perc_loss + 0.00005 * semantic_loss
+                    loss = 2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss
 
                 val_loss += loss.item()
                 val_psnr += psnr(sr_img, hr_img).item()
