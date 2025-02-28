@@ -5,6 +5,7 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 from torchvision.models.segmentation import deeplabv3_resnet101
+from torchvision.transforms.functional import gaussian_blur
 from PIL import Image
 import os
 import numpy as np
@@ -26,7 +27,7 @@ val_lr_dir = os.path.join(base_data_dir, 'DIV2K/val/DIV2K_valid_LR_bicubic/X4')
 cache_dir = os.path.join(current_dir, 'data_cache')
 os.makedirs(cache_dir, exist_ok=True)
 
-# 1. 数据准备（添加标准化）
+# 1. 数据准备
 class SRDataset(Dataset):
     def __init__(self, hr_dir, lr_dir, crop_size=None, use_cache=True):
         self.hr_dir = hr_dir
@@ -164,19 +165,22 @@ class EnhancedEDSR(nn.Module):
             *[ResBlock(64) for _ in range(num_blocks)]
         )
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv_up1 = nn.Conv2d(64, 256, kernel_size=3, padding=1)  # 256 = 64 * 2^2
-        self.up1 = nn.PixelShuffle(2)  # 第一次上采样
+        self.conv_up1 = nn.Conv2d(64, 256, kernel_size=3, padding=1)
+        self.up1 = nn.PixelShuffle(2)
+        self.smooth1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.att1 = CBAM(64)
         self.conv3 = nn.Conv2d(64, 256, kernel_size=3, padding=1)
-        self.up2 = nn.PixelShuffle(2)  # 第二次上采样
+        self.up2 = nn.PixelShuffle(2)
+        self.smooth2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.att2 = CBAM(64)
         self.fusion = nn.Conv2d(128, 64, kernel_size=1)
-        self.conv_out = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
+        self.conv_out = nn.Conv2d(64, out_channels, kernel_size=5, padding=2)
+        self.smooth_out = nn.Conv2d(out_channels, out_channels, kernel_size=5, padding=2)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu', a=0.02)  # 调整初始化
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
@@ -185,14 +189,17 @@ class EnhancedEDSR(nn.Module):
         x = x + self.body(x)
         x2 = self.conv2(x)
         x2 = self.conv_up1(x2)
-        x2 = self.up1(x2)  # 使用 PixelShuffle 上采样
+        x2 = self.up1(x2)
+        x2 = self.smooth1(x2)
         x2 = self.att1(x2)
         x3 = self.conv3(x2)
-        x3 = self.up2(x3)  # 使用 PixelShuffle 上采样
+        x3 = self.up2(x3)
+        x3 = self.smooth2(x3)
         x3 = self.att2(x3)
         x_fused = self.fusion(torch.cat([F.interpolate(x2, size=x3.shape[2:], mode='bicubic', align_corners=False), x3], dim=1))
         x = self.conv_out(x_fused)
-        return x  # 移除 sigmoid
+        x = self.smooth_out(x)
+        return x  # 移除 tanh 约束
 
 class FeatureFusionSR(nn.Module):
     def __init__(self):
@@ -255,7 +262,7 @@ class FeatureFusionSR(nn.Module):
         sr_img = self.forward_fusion_and_sr(semantic_feature, low_level_feature)
         return sr_img
 
-# 3. 感知损失（添加颜色一致性损失）
+# 3. 感知损失
 class PerceptualLoss(nn.Module):
     def __init__(self, device):
         super(PerceptualLoss, self).__init__()
@@ -271,7 +278,6 @@ class PerceptualLoss(nn.Module):
             param.requires_grad = False
 
     def rgb_to_hsv(self, img):
-        """将 RGB 图像转换为 HSV，用于颜色一致性损失"""
         r, g, b = img[:, 0], img[:, 1], img[:, 2]
         mx = torch.max(img, dim=1)[0]
         mn = torch.min(img, dim=1)[0]
@@ -289,22 +295,21 @@ class PerceptualLoss(nn.Module):
         return torch.stack([h, s, v], dim=1)
 
     def forward(self, sr_img, hr_img, lr_img, compute_semantic=True):
-        sr_feat = self.vgg(sr_img)
-        hr_feat = self.vgg(hr_img)
+        sr_img_denorm = (sr_img * self.std + self.mean).clamp(0, 1)
+        hr_img_denorm = (hr_img * self.std + self.mean).clamp(0, 1)
+        lr_img_denorm = (lr_img * self.std + self.mean).clamp(0, 1)
+
+        sr_feat = self.vgg(sr_img_denorm)
+        hr_feat = self.vgg(hr_img_denorm)
         perc_loss = F.mse_loss(sr_feat, hr_feat)
 
-        # 颜色一致性损失（基于 HSV 色调）
-        sr_img_denorm = sr_img * self.std + self.mean  # 反归一化
-        hr_img_denorm = hr_img * self.mean + self.std
-        sr_hsv = self.rgb_to_hsv(sr_img_denorm.clamp(0, 1))
-        hr_hsv = self.rgb_to_hsv(hr_img_denorm.clamp(0, 1))
-        color_loss = F.mse_loss(sr_hsv[:, 0], hr_hsv[:, 0])  # 只对比色调 (H)
+        sr_hsv = self.rgb_to_hsv(sr_img_denorm)
+        hr_hsv = self.rgb_to_hsv(hr_img_denorm)
+        color_loss = F.mse_loss(sr_hsv[:, 0], hr_hsv[:, 0])
 
         if compute_semantic:
-            sr_img_norm = (sr_img_denorm - self.mean) / self.std
-            lr_img_norm = (lr_img - self.mean) / self.std
-            sr_semantic = self.semantic_model(sr_img_norm)['out']
-            lr_semantic = self.semantic_model(lr_img_norm)['out']
+            sr_semantic = self.semantic_model(sr_img_denorm)['out']
+            lr_semantic = self.semantic_model(lr_img_denorm)['out']
             sr_semantic = F.interpolate(sr_semantic, size=lr_semantic.shape[2:], mode='bilinear', align_corners=False)
             sr_semantic = F.softmax(sr_semantic, dim=1)
             lr_semantic = F.softmax(lr_semantic, dim=1)
@@ -341,11 +346,10 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
     first_batch = next(train_iter)
     print("训练数据管道预热完成！")
 
-    # 反归一化参数
     mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
     std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
     def denormalize(img):
-        return img * std + mean
+        return (img * std + mean).clamp(0, 1)
 
     for epoch in range(num_epochs):
         model.train()
@@ -360,14 +364,16 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             hr_img_denorm = denormalize(hr_img)
             lr_img_denorm = denormalize(lr_img)
 
+            sr_img_denorm = gaussian_blur(sr_img_denorm, kernel_size=3, sigma=0.3)  # 减小 sigma
+
             l1_loss = criterion_l1(sr_img_denorm, hr_img_denorm)
-            compute_semantic = True
-            perc_loss, semantic_loss, color_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
-            loss = (3.0 * l1_loss + 0.5 * perc_loss + 0.5 * semantic_loss + 1.0 * color_loss) / accumulation_steps  # 调整权重
+            perc_loss, semantic_loss, color_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic=True)
+            loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss + 1.0 * color_loss) / accumulation_steps
 
             print(f"第 {epoch + 1} 轮, 第 1 批次:")
             print(f"低分辨率图像: 最小值={lr_img_denorm.min().item():.4f}, 最大值={lr_img_denorm.max().item():.4f}")
             print(f"高分辨率图像: 最小值={hr_img_denorm.min().item():.4f}, 最大值={hr_img_denorm.max().item():.4f}")
+            print(f"超分辨率图像（反归一化前）: 最小值={sr_img.min().item():.4f}, 最大值={sr_img.max().item():.4f}")
             print(f"超分辨率图像: 最小值={sr_img_denorm.min().item():.4f}, 最大值={sr_img_denorm.max().item():.4f}")
             print(f"L1 Loss: {l1_loss.item():.4f}, Perc Loss: {perc_loss.item():.4f}, "
                   f"Semantic Loss: {semantic_loss.item():.4f}, Color Loss: {color_loss.item():.4f}, "
@@ -391,10 +397,12 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
                 hr_img_denorm = denormalize(hr_img)
                 lr_img_denorm = denormalize(lr_img)
 
+                sr_img_denorm = gaussian_blur(sr_img_denorm, kernel_size=3, sigma=0.3)
+
                 l1_loss = criterion_l1(sr_img_denorm, hr_img_denorm)
                 compute_semantic = (i % 5 == 0)
                 perc_loss, semantic_loss, color_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
-                loss = (3.0 * l1_loss + 0.5 * perc_loss + 0.5 * semantic_loss + 1.0 * color_loss) / accumulation_steps
+                loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss + 1.0 * color_loss) / accumulation_steps
 
             scaler.scale(loss).backward()
 
@@ -409,8 +417,8 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             progress_bar.set_postfix({'训练损失': f'{avg_loss:.4f}'})
 
             if i == 0 and epoch % 10 == 0:
-                writer.add_image('SR_Image', sr_img_denorm.clamp(0, 1)[0], epoch)
-                writer.add_image('HR_Image', hr_img_denorm.clamp(0, 1)[0], epoch)
+                writer.add_image('SR_Image', sr_img_denorm[0], epoch)
+                writer.add_image('HR_Image', hr_img_denorm[0], epoch)
 
         train_loss = running_loss / len(train_loader)
 
@@ -426,13 +434,15 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
                     hr_img_denorm = denormalize(hr_img)
                     lr_img_denorm = denormalize(lr_img)
 
+                    sr_img_denorm = gaussian_blur(sr_img_denorm, kernel_size=3, sigma=0.3)
+
                     l1_loss = criterion_l1(sr_img_denorm, hr_img_denorm)
                     perc_loss, semantic_loss, color_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic=True)
-                    loss = 3.0 * l1_loss + 0.5 * perc_loss + 0.5 * semantic_loss + 1.0 * color_loss
+                    loss = 2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss + 1.0 * color_loss
 
                 val_loss += loss.item()
-                val_psnr += psnr(sr_img_denorm.clamp(0, 1), hr_img_denorm.clamp(0, 1)).item()
-                val_ssim += ssim(sr_img_denorm.clamp(0, 1), hr_img_denorm.clamp(0, 1)).item()
+                val_psnr += psnr(sr_img_denorm, hr_img_denorm).item()
+                val_ssim += ssim(sr_img_denorm, hr_img_denorm).item()
 
         val_loss /= len(val_loader)
         val_psnr /= len(val_loader)

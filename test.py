@@ -4,12 +4,13 @@ import torch.nn.functional as F
 from torchvision import transforms
 from torchvision.models.segmentation import deeplabv3_resnet101
 import torchvision.models as models
+from torchvision.transforms.functional import gaussian_blur  # 与训练代码一致
 from PIL import Image
 import os
 import numpy as np
 from tqdm import tqdm
 
-# 定义 ChannelAttention 类
+# 定义 ChannelAttention 类（与训练代码一致）
 class ChannelAttention(nn.Module):
     def __init__(self, channels, reduction=16):
         super(ChannelAttention, self).__init__()
@@ -28,7 +29,7 @@ class ChannelAttention(nn.Module):
         max_out = self.fc(self.max_pool(x).view(b, c))
         return self.sigmoid(avg_out + max_out).view(b, c, 1, 1) * x
 
-# 定义 SpatialAttention 类
+# 定义 SpatialAttention 类（与训练代码一致）
 class SpatialAttention(nn.Module):
     def __init__(self):
         super(SpatialAttention, self).__init__()
@@ -41,7 +42,7 @@ class SpatialAttention(nn.Module):
         out = torch.cat([avg_out, max_out], dim=1)
         return self.sigmoid(self.conv(out)) * x
 
-# 定义 CBAM 类
+# 定义 CBAM 类（与训练代码一致）
 class CBAM(nn.Module):
     def __init__(self, channels, reduction=16):
         super(CBAM, self).__init__()
@@ -62,7 +63,7 @@ class ResBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(channels)
-        self.scale = nn.Parameter(torch.tensor(0.1))  # 可学习缩放系数
+        self.scale = nn.Parameter(torch.tensor(0.1))
 
     def forward(self, x):
         residual = x
@@ -73,7 +74,7 @@ class ResBlock(nn.Module):
         out = self.bn2(out)
         return residual + self.scale * out
 
-# 定义 EnhancedEDSR 类（与训练代码一致，使用 PixelShuffle）
+# 定义 EnhancedEDSR 类（与训练代码一致）
 class EnhancedEDSR(nn.Module):
     def __init__(self, in_channels=256, out_channels=3, num_blocks=32):
         super(EnhancedEDSR, self).__init__()
@@ -82,19 +83,22 @@ class EnhancedEDSR(nn.Module):
             *[ResBlock(64) for _ in range(num_blocks)]
         )
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv_up1 = nn.Conv2d(64, 256, kernel_size=3, padding=1)  # 256 = 64 * 2^2
-        self.up1 = nn.PixelShuffle(2)  # 第一次上采样
+        self.conv_up1 = nn.Conv2d(64, 256, kernel_size=3, padding=1)
+        self.up1 = nn.PixelShuffle(2)
+        self.smooth1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.att1 = CBAM(64)
         self.conv3 = nn.Conv2d(64, 256, kernel_size=3, padding=1)
-        self.up2 = nn.PixelShuffle(2)  # 第二次上采样
+        self.up2 = nn.PixelShuffle(2)
+        self.smooth2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.att2 = CBAM(64)
         self.fusion = nn.Conv2d(128, 64, kernel_size=1)
-        self.conv_out = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
+        self.conv_out = nn.Conv2d(64, out_channels, kernel_size=5, padding=2)
+        self.smooth_out = nn.Conv2d(out_channels, out_channels, kernel_size=5, padding=2)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu', a=0.02)
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
@@ -103,14 +107,17 @@ class EnhancedEDSR(nn.Module):
         x = x + self.body(x)
         x2 = self.conv2(x)
         x2 = self.conv_up1(x2)
-        x2 = self.up1(x2)  # 使用 PixelShuffle 上采样
+        x2 = self.up1(x2)
+        x2 = self.smooth1(x2)
         x2 = self.att1(x2)
         x3 = self.conv3(x2)
-        x3 = self.up2(x3)  # 使用 PixelShuffle 上采样
+        x3 = self.up2(x3)
+        x3 = self.smooth2(x3)
         x3 = self.att2(x3)
         x_fused = self.fusion(torch.cat([F.interpolate(x2, size=x3.shape[2:], mode='bicubic', align_corners=False), x3], dim=1))
         x = self.conv_out(x_fused)
-        return x  # 无 sigmoid 输出
+        x = self.smooth_out(x)
+        return x  # 无 tanh 输出
 
 # 定义 FeatureFusionSR 类（与训练代码一致）
 class FeatureFusionSR(nn.Module):
@@ -206,7 +213,7 @@ def test_super_resolution(model_path, test_dir, output_dir):
     mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
     std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
     def denormalize(img):
-        return img * std + mean
+        return (img * std + mean).clamp(0, 1)
 
     # 获取测试图片列表
     test_images = sorted([f for f in os.listdir(test_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
@@ -222,6 +229,7 @@ def test_super_resolution(model_path, test_dir, output_dir):
             # 生成超分辨率图片
             sr_tensor = model(lr_tensor)
             sr_tensor_denorm = denormalize(sr_tensor)  # 反归一化
+            sr_tensor_denorm = gaussian_blur(sr_tensor_denorm, kernel_size=3, sigma=0.3)  # 与训练一致的模糊
             sr_tensor_denorm = torch.clamp(sr_tensor_denorm, 0, 1)  # 确保输出在 [0, 1] 范围内
             sr_tensor_denorm = sr_tensor_denorm.squeeze(0).cpu()
 
