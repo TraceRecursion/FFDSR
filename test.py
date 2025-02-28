@@ -53,7 +53,7 @@ class CBAM(nn.Module):
         x = self.spatial_att(x)
         return x
 
-# 定义 ResBlock 类（添加可学习缩放系数，与训练代码一致）
+# 定义 ResBlock 类（与训练代码一致）
 class ResBlock(nn.Module):
     def __init__(self, channels):
         super(ResBlock, self).__init__()
@@ -62,7 +62,7 @@ class ResBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(channels)
-        self.scale = nn.Parameter(torch.tensor(0.1))  # 可学习缩放系数，初始化为0.1
+        self.scale = nn.Parameter(torch.tensor(0.1))  # 可学习缩放系数
 
     def forward(self, x):
         residual = x
@@ -71,25 +71,25 @@ class ResBlock(nn.Module):
         out = self.relu(out)
         out = self.conv2(out)
         out = self.bn2(out)
-        return residual + self.scale * out  # 使用可学习缩放系数
+        return residual + self.scale * out
 
-# 定义 EnhancedEDSR 类（残差块改为32，与训练代码一致）
+# 定义 EnhancedEDSR 类（与训练代码一致，使用 PixelShuffle）
 class EnhancedEDSR(nn.Module):
-    def __init__(self, in_channels=256, out_channels=3, num_blocks=32):  # 修改为32个残差块
+    def __init__(self, in_channels=256, out_channels=3, num_blocks=32):
         super(EnhancedEDSR, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
         self.body = nn.Sequential(
-            *[ResBlock(64) for _ in range(num_blocks)]  # 修改为32个残差块
+            *[ResBlock(64) for _ in range(num_blocks)]
         )
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv_up1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv_up1 = nn.Conv2d(64, 256, kernel_size=3, padding=1)  # 256 = 64 * 2^2
+        self.up1 = nn.PixelShuffle(2)  # 第一次上采样
         self.att1 = CBAM(64)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv_up2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 256, kernel_size=3, padding=1)
+        self.up2 = nn.PixelShuffle(2)  # 第二次上采样
         self.att2 = CBAM(64)
         self.fusion = nn.Conv2d(128, 64, kernel_size=1)
         self.conv_out = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
-
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
@@ -102,24 +102,22 @@ class EnhancedEDSR(nn.Module):
         x = self.conv1(x)
         x = x + self.body(x)
         x2 = self.conv2(x)
-        x2 = F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False)
         x2 = self.conv_up1(x2)
+        x2 = self.up1(x2)  # 使用 PixelShuffle 上采样
         x2 = self.att1(x2)
         x3 = self.conv3(x2)
-        x3 = F.interpolate(x3, scale_factor=2, mode='bilinear', align_corners=False)
-        x3 = self.conv_up2(x3)
+        x3 = self.up2(x3)  # 使用 PixelShuffle 上采样
         x3 = self.att2(x3)
-        x_fused = self.fusion(torch.cat([F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False), x3], dim=1))
+        x_fused = self.fusion(torch.cat([F.interpolate(x2, size=x3.shape[2:], mode='bicubic', align_corners=False), x3], dim=1))
         x = self.conv_out(x_fused)
-        return torch.sigmoid(x)
+        return x  # 无 sigmoid 输出
 
 # 定义 FeatureFusionSR 类（与训练代码一致）
 class FeatureFusionSR(nn.Module):
     def __init__(self):
         super(FeatureFusionSR, self).__init__()
-        # 使用 COCO 91 类预训练权重，与训练代码一致
         self.semantic_model = deeplabv3_resnet101(weights='COCO_WITH_VOC_LABELS_V1').eval()
-        self.embedding = nn.Embedding(91, 64)  # 修改为91类，与训练代码一致
+        self.embedding = nn.Embedding(91, 64)
         self.resnet = models.resnet50(weights='DEFAULT')
         self.resnet_conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=1, padding=3)
         self.resnet_bn1 = self.resnet.bn1
@@ -132,7 +130,6 @@ class FeatureFusionSR(nn.Module):
         self.cbam = CBAM(256)
         self.sr_net = EnhancedEDSR()
 
-        # 冻结预训练层（与训练代码一致）
         for param in self.semantic_model.backbone.parameters():
             param.requires_grad = False
         for param in self.resnet.parameters():
@@ -157,14 +154,14 @@ class FeatureFusionSR(nn.Module):
         layer1_out = self.resnet_layer1(x)
         layer2_out = self.resnet_layer2(layer1_out)
         layer3_out = self.resnet_layer3(layer2_out)
-        layer2_out = F.interpolate(layer2_out, size=layer1_out.shape[2:], mode='bilinear', align_corners=False)
-        layer3_out = F.interpolate(layer3_out, size=layer1_out.shape[2:], mode='bilinear', align_corners=False)
+        layer2_out = F.interpolate(layer2_out, size=layer1_out.shape[2:], mode='bicubic', align_corners=False)
+        layer3_out = F.interpolate(layer3_out, size=layer1_out.shape[2:], mode='bicubic', align_corners=False)
         low_level_feature = torch.cat([layer1_out, layer2_out, layer3_out], dim=1)
         return low_level_feature
 
     def forward_fusion_and_sr(self, semantic_feature, low_level_feature):
         target_h, target_w = low_level_feature.shape[2:]
-        semantic_feature = F.interpolate(semantic_feature, size=(target_h, target_w), mode='bilinear', align_corners=False)
+        semantic_feature = F.interpolate(semantic_feature, size=(target_h, target_w), mode='bicubic', align_corners=False)
         fused_feature = torch.cat([semantic_feature, low_level_feature], dim=1)
         fused_feature = self.fusion_conv(fused_feature)
         fused_feature = self.cbam(fused_feature)
@@ -198,9 +195,18 @@ def test_super_resolution(model_path, test_dir, output_dir):
     # 创建输出文件夹
     os.makedirs(output_dir, exist_ok=True)
 
-    # 数据转换
-    to_tensor = transforms.ToTensor()
+    # 数据转换（与训练一致的标准化）
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])  # 与训练一致
+    ])
     to_pil = transforms.ToPILImage()
+
+    # 反归一化参数（与训练一致）
+    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
+    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
+    def denormalize(img):
+        return img * std + mean
 
     # 获取测试图片列表
     test_images = sorted([f for f in os.listdir(test_dir) if f.endswith(('.png', '.jpg', '.jpeg'))])
@@ -211,15 +217,16 @@ def test_super_resolution(model_path, test_dir, output_dir):
             # 读取低分辨率图片
             img_path = os.path.join(test_dir, img_name)
             lr_img = Image.open(img_path).convert('RGB')
-            lr_tensor = to_tensor(lr_img).unsqueeze(0).to(device)
+            lr_tensor = transform(lr_img).unsqueeze(0).to(device)
 
             # 生成超分辨率图片
             sr_tensor = model(lr_tensor)
-            sr_tensor = torch.clamp(sr_tensor, 0, 1)  # 确保输出在 [0, 1] 范围内
-            sr_tensor = sr_tensor.squeeze(0).cpu()
+            sr_tensor_denorm = denormalize(sr_tensor)  # 反归一化
+            sr_tensor_denorm = torch.clamp(sr_tensor_denorm, 0, 1)  # 确保输出在 [0, 1] 范围内
+            sr_tensor_denorm = sr_tensor_denorm.squeeze(0).cpu()
 
             # 保存结果
-            sr_img = to_pil(sr_tensor)
+            sr_img = to_pil(sr_tensor_denorm)
             output_path = os.path.join(output_dir, f"sr_{img_name}")
             sr_img.save(output_path)
 
