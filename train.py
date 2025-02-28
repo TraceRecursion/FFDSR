@@ -26,12 +26,6 @@ val_lr_dir = os.path.join(base_data_dir, 'DIV2K/val/DIV2K_valid_LR_bicubic/X4')
 cache_dir = os.path.join(current_dir, 'data_cache')
 os.makedirs(cache_dir, exist_ok=True)
 
-# TensorBoard 日志目录（每次运行唯一）
-timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-log_dir = os.path.join(current_dir, f'runs/run_{timestamp}')
-os.makedirs(log_dir, exist_ok=True)
-
-
 # 1. 数据准备
 class SRDataset(Dataset):
     def __init__(self, hr_dir, lr_dir, crop_size=None, use_cache=True):
@@ -97,7 +91,6 @@ class SRDataset(Dataset):
 
         return lr_img, hr_img
 
-
 # 2. 模型设计
 class ChannelAttention(nn.Module):
     def __init__(self, channels, reduction=16):
@@ -117,7 +110,6 @@ class ChannelAttention(nn.Module):
         max_out = self.fc(self.max_pool(x).view(b, c))
         return self.sigmoid(avg_out + max_out).view(b, c, 1, 1) * x
 
-
 class SpatialAttention(nn.Module):
     def __init__(self):
         super(SpatialAttention, self).__init__()
@@ -130,7 +122,6 @@ class SpatialAttention(nn.Module):
         out = torch.cat([avg_out, max_out], dim=1)
         return self.sigmoid(self.conv(out)) * x
 
-
 class CBAM(nn.Module):
     def __init__(self, channels, reduction=16):
         super(CBAM, self).__init__()
@@ -142,7 +133,6 @@ class CBAM(nn.Module):
         x = self.spatial_att(x)
         return x
 
-
 class ResBlock(nn.Module):
     def __init__(self, channels):
         super(ResBlock, self).__init__()
@@ -151,6 +141,7 @@ class ResBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(channels)
+        self.scale = nn.Parameter(torch.tensor(0.1))
 
     def forward(self, x):
         residual = x
@@ -159,11 +150,10 @@ class ResBlock(nn.Module):
         out = self.relu(out)
         out = self.conv2(out)
         out = self.bn2(out)
-        return residual + 0.1 * out
-
+        return residual + self.scale * out
 
 class EnhancedEDSR(nn.Module):
-    def __init__(self, in_channels=256, out_channels=3, num_blocks=64):
+    def __init__(self, in_channels=256, out_channels=3, num_blocks=32):
         super(EnhancedEDSR, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
         self.body = nn.Sequential(
@@ -200,13 +190,11 @@ class EnhancedEDSR(nn.Module):
         x = self.conv_out(x_fused)
         return torch.sigmoid(x)
 
-
 class FeatureFusionSR(nn.Module):
     def __init__(self):
         super(FeatureFusionSR, self).__init__()
-        # 使用 PyTorch 原生的 DeepLabv3_ResNet101，加载 COCO 91 类预训练权重
         self.semantic_model = deeplabv3_resnet101(weights='COCO_WITH_VOC_LABELS_V1').eval()
-        self.embedding = nn.Embedding(91, 64)  # 调整为 91 类
+        self.embedding = nn.Embedding(91, 64)
         self.resnet = models.resnet50(weights='DEFAULT')
         self.resnet_conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=1, padding=3)
         self.resnet_bn1 = self.resnet.bn1
@@ -229,7 +217,7 @@ class FeatureFusionSR(nn.Module):
             param.requires_grad = False
 
     def forward_semantic(self, lr_img):
-        semantic_output = self.semantic_model(lr_img)['out']  # 输出 91 类 logits
+        semantic_output = self.semantic_model(lr_img)['out']
         semantic_labels = semantic_output.argmax(dim=1)
         semantic_feature = self.embedding(semantic_labels).permute(0, 3, 1, 2)
         return semantic_feature
@@ -263,7 +251,6 @@ class FeatureFusionSR(nn.Module):
         sr_img = self.forward_fusion_and_sr(semantic_feature, low_level_feature)
         return sr_img
 
-
 # 3. 感知损失
 class PerceptualLoss(nn.Module):
     def __init__(self, device):
@@ -271,7 +258,7 @@ class PerceptualLoss(nn.Module):
         vgg = models.vgg19(weights='DEFAULT').features.eval().to(device)
         self.vgg = vgg
         self.layer = '3'
-        self.semantic_model = deeplabv3_resnet101(weights='COCO_WITH_VOC_LABELS_V1').eval().to(device)  # 同步更新为 91 类
+        self.semantic_model = deeplabv3_resnet101(weights='COCO_WITH_VOC_LABELS_V1').eval().to(device)
         self.mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
         self.std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
         for param in self.vgg.parameters():
@@ -290,7 +277,6 @@ class PerceptualLoss(nn.Module):
             sr_semantic = self.semantic_model(sr_img_norm)['out']
             lr_semantic = self.semantic_model(lr_img_norm)['out']
             sr_semantic = F.interpolate(sr_semantic, size=lr_semantic.shape[2:], mode='bilinear', align_corners=False)
-            # 标准化为概率分布
             sr_semantic = F.softmax(sr_semantic, dim=1)
             lr_semantic = F.softmax(lr_semantic, dim=1)
             semantic_loss = F.mse_loss(sr_semantic, lr_semantic)
@@ -303,17 +289,16 @@ class PerceptualLoss(nn.Module):
 
         return perc_loss, semantic_loss
 
-
 # 4. 训练与评估
 def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler,
-                       device, num_epochs=100, accumulation_steps=2):
+                       device, log_dir, num_epochs=100, accumulation_steps=2):  # 添加 log_dir 参数
     model.to(device)
     os.makedirs("models", exist_ok=True)
     scaler = GradScaler('cuda')
     best_val_loss = float('inf')
     psnr = PeakSignalNoiseRatio().to(device)
     ssim = StructuralSimilarityIndexMeasure().to(device)
-    writer = SummaryWriter(log_dir)
+    writer = SummaryWriter(log_dir)  # 使用传入的 log_dir
 
     val_data = []
     print("预加载验证数据到 GPU...")
@@ -339,7 +324,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             l1_loss = criterion_l1(sr_img, hr_img)
             compute_semantic = True
             perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
-            loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss) / accumulation_steps  # 语义权重提升到 0.5
+            loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss) / accumulation_steps
 
             print(f"第 {epoch + 1} 轮, 第 1 批次:")
             print(f"低分辨率图像: 最小值={lr_img.min().item():.4f}, 最大值={lr_img.max().item():.4f}, "
@@ -439,9 +424,13 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
     writer.close()
     print("训练完成！")
 
-
 # 主函数
 if __name__ == "__main__":
+    # 定义唯一的日志目录
+    timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    log_dir = os.path.join(current_dir, f'runs/run_{timestamp}')
+    os.makedirs(log_dir, exist_ok=True)  # 在主进程中创建目录
+
     if torch.cuda.is_available():
         device = torch.device("cuda")
         print("使用设备: CUDA (NVIDIA GPU)")
@@ -459,9 +448,9 @@ if __name__ == "__main__":
 
     train_dataset = SRDataset(hr_dir=train_hr_dir, lr_dir=train_lr_dir, crop_size=512, use_cache=True)
     val_dataset = SRDataset(hr_dir=val_hr_dir, lr_dir=val_lr_dir, crop_size=512, use_cache=True)
-    train_loader = DataLoader(train_dataset, batch_size=8, shuffle=True, num_workers=8, pin_memory=True,
+    train_loader = DataLoader(train_dataset, batch_size=10, shuffle=True, num_workers=8, pin_memory=True,
                               prefetch_factor=2, multiprocessing_context='spawn', persistent_workers=True)
-    val_loader = DataLoader(val_dataset, batch_size=8, shuffle=False, num_workers=8, pin_memory=True,
+    val_loader = DataLoader(val_dataset, batch_size=10, shuffle=False, num_workers=8, pin_memory=True,
                             prefetch_factor=2, multiprocessing_context='spawn', persistent_workers=True)
 
     model = FeatureFusionSR().to(device)
@@ -470,8 +459,9 @@ if __name__ == "__main__":
     optimizer = optim.AdamW(model.parameters(), lr=2e-4, weight_decay=1e-2)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
+    # 传递 log_dir 参数给训练函数
     train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler,
-                       device, num_epochs=100, accumulation_steps=2)
+                       device, log_dir, num_epochs=100, accumulation_steps=2)
 
     torch.save(model.state_dict(), "models/final_model.pth")
     print("最终模型保存为 models/final_model.pth")

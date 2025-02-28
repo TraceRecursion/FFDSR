@@ -53,7 +53,7 @@ class CBAM(nn.Module):
         x = self.spatial_att(x)
         return x
 
-# 定义 ResBlock 类
+# 定义 ResBlock 类（添加可学习缩放系数，与训练代码一致）
 class ResBlock(nn.Module):
     def __init__(self, channels):
         super(ResBlock, self).__init__()
@@ -62,6 +62,7 @@ class ResBlock(nn.Module):
         self.relu = nn.ReLU(inplace=True)
         self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
         self.bn2 = nn.BatchNorm2d(channels)
+        self.scale = nn.Parameter(torch.tensor(0.1))  # 可学习缩放系数，初始化为0.1
 
     def forward(self, x):
         residual = x
@@ -70,20 +71,20 @@ class ResBlock(nn.Module):
         out = self.relu(out)
         out = self.conv2(out)
         out = self.bn2(out)
-        return residual + 0.1 * out
+        return residual + self.scale * out  # 使用可学习缩放系数
 
-# 定义 EnhancedEDSR 类（与训练代码一致）
+# 定义 EnhancedEDSR 类（残差块改为32，与训练代码一致）
 class EnhancedEDSR(nn.Module):
-    def __init__(self, in_channels=256, out_channels=3, num_blocks=64):
+    def __init__(self, in_channels=256, out_channels=3, num_blocks=32):  # 修改为32个残差块
         super(EnhancedEDSR, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
         self.body = nn.Sequential(
-            *[ResBlock(64) for _ in range(num_blocks)]
+            *[ResBlock(64) for _ in range(num_blocks)]  # 修改为32个残差块
         )
-        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)  # 修改：去掉 *4，使用双线性插值
+        self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.conv_up1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.att1 = CBAM(64)
-        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)  # 修改：去掉 *4，使用双线性插值
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.conv_up2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.att2 = CBAM(64)
         self.fusion = nn.Conv2d(128, 64, kernel_size=1)
@@ -101,11 +102,11 @@ class EnhancedEDSR(nn.Module):
         x = self.conv1(x)
         x = x + self.body(x)
         x2 = self.conv2(x)
-        x2 = F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False)  # 双线性上采样
+        x2 = F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False)
         x2 = self.conv_up1(x2)
         x2 = self.att1(x2)
         x3 = self.conv3(x2)
-        x3 = F.interpolate(x3, scale_factor=2, mode='bilinear', align_corners=False)  # 双线性上采样
+        x3 = F.interpolate(x3, scale_factor=2, mode='bilinear', align_corners=False)
         x3 = self.conv_up2(x3)
         x3 = self.att2(x3)
         x_fused = self.fusion(torch.cat([F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False), x3], dim=1))
@@ -116,8 +117,9 @@ class EnhancedEDSR(nn.Module):
 class FeatureFusionSR(nn.Module):
     def __init__(self):
         super(FeatureFusionSR, self).__init__()
-        self.semantic_model = deeplabv3_resnet101(weights='DEFAULT').eval()
-        self.embedding = nn.Embedding(21, 64)
+        # 使用 COCO 91 类预训练权重，与训练代码一致
+        self.semantic_model = deeplabv3_resnet101(weights='COCO_WITH_VOC_LABELS_V1').eval()
+        self.embedding = nn.Embedding(91, 64)  # 修改为91类，与训练代码一致
         self.resnet = models.resnet50(weights='DEFAULT')
         self.resnet_conv1 = nn.Conv2d(3, 64, kernel_size=7, stride=1, padding=3)
         self.resnet_bn1 = self.resnet.bn1
