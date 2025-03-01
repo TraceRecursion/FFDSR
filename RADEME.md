@@ -1,1 +1,1 @@
-tensorboard --logdir=runs --host=100.74.5.7 --port=6006
+tensorboard --logdir=runs --host=100.74.5.7 --port=6006[RADEME.md](RADEME.md)

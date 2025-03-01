@@ -5,7 +5,6 @@ import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 from torchvision import transforms, models
 from torchvision.models.segmentation import deeplabv3_resnet101
-from torchvision.transforms.functional import gaussian_blur
 from PIL import Image
 import os
 import numpy as np
@@ -45,11 +44,6 @@ class SRDataset(Dataset):
         self.cache_hr = os.path.join(cache_dir, hr_cache_name)
         self.cache_lr = os.path.join(cache_dir, lr_cache_name)
 
-        self.transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-
         if self.use_cache and os.path.exists(self.cache_hr) and os.path.exists(self.cache_lr):
             print(f"加载缓存数据: {self.cache_hr}, {self.cache_lr}")
             self.hr_data = torch.load(self.cache_hr)
@@ -60,6 +54,7 @@ class SRDataset(Dataset):
             print(f"缓存不存在，正在生成缓存: {self.cache_hr}, {self.cache_lr}")
             self.hr_data = []
             self.lr_data = []
+            to_tensor = transforms.ToTensor()
             for hr_file, lr_file in tqdm(zip(self.hr_files, self.lr_files), total=len(self.hr_files),
                                          desc="缓存数据预处理"):
                 hr_path = os.path.join(self.hr_dir, hr_file)
@@ -67,8 +62,8 @@ class SRDataset(Dataset):
                 try:
                     hr_img = Image.open(hr_path).convert('RGB')
                     lr_img = Image.open(lr_path).convert('RGB')
-                    self.hr_data.append(self.transform(hr_img))
-                    self.lr_data.append(self.transform(lr_img))
+                    self.hr_data.append(to_tensor(hr_img))
+                    self.lr_data.append(to_tensor(lr_img))
                 except Exception as e:
                     print(f"跳过文件 {hr_file}/{lr_file}，错误: {e}")
             torch.save(self.hr_data, self.cache_hr)
@@ -165,22 +160,18 @@ class EnhancedEDSR(nn.Module):
             *[ResBlock(64) for _ in range(num_blocks)]
         )
         self.conv2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
-        self.conv_up1 = nn.Conv2d(64, 256, kernel_size=3, padding=1)
-        self.up1 = nn.PixelShuffle(2)
-        self.smooth1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv_up1 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.att1 = CBAM(64)
-        self.conv3 = nn.Conv2d(64, 256, kernel_size=3, padding=1)
-        self.up2 = nn.PixelShuffle(2)
-        self.smooth2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
+        self.conv_up2 = nn.Conv2d(64, 64, kernel_size=3, padding=1)
         self.att2 = CBAM(64)
         self.fusion = nn.Conv2d(128, 64, kernel_size=1)
-        self.conv_out = nn.Conv2d(64, out_channels, kernel_size=5, padding=2)
-        self.smooth_out = nn.Conv2d(out_channels, out_channels, kernel_size=5, padding=2)
+        self.conv_out = nn.Conv2d(64, out_channels, kernel_size=3, padding=1)
         self.apply(self._init_weights)
 
     def _init_weights(self, m):
         if isinstance(m, nn.Conv2d):
-            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu', a=0.02)  # 调整初始化
+            nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
@@ -188,18 +179,16 @@ class EnhancedEDSR(nn.Module):
         x = self.conv1(x)
         x = x + self.body(x)
         x2 = self.conv2(x)
+        x2 = F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False)
         x2 = self.conv_up1(x2)
-        x2 = self.up1(x2)
-        x2 = self.smooth1(x2)
         x2 = self.att1(x2)
         x3 = self.conv3(x2)
-        x3 = self.up2(x3)
-        x3 = self.smooth2(x3)
+        x3 = F.interpolate(x3, scale_factor=2, mode='bilinear', align_corners=False)
+        x3 = self.conv_up2(x3)
         x3 = self.att2(x3)
-        x_fused = self.fusion(torch.cat([F.interpolate(x2, size=x3.shape[2:], mode='bicubic', align_corners=False), x3], dim=1))
+        x_fused = self.fusion(torch.cat([F.interpolate(x2, scale_factor=2, mode='bilinear', align_corners=False), x3], dim=1))
         x = self.conv_out(x_fused)
-        x = self.smooth_out(x)
-        return x  # 移除 tanh 约束
+        return torch.sigmoid(x)
 
 class FeatureFusionSR(nn.Module):
     def __init__(self):
@@ -241,14 +230,14 @@ class FeatureFusionSR(nn.Module):
         layer1_out = self.resnet_layer1(x)
         layer2_out = self.resnet_layer2(layer1_out)
         layer3_out = self.resnet_layer3(layer2_out)
-        layer2_out = F.interpolate(layer2_out, size=layer1_out.shape[2:], mode='bicubic', align_corners=False)
-        layer3_out = F.interpolate(layer3_out, size=layer1_out.shape[2:], mode='bicubic', align_corners=False)
+        layer2_out = F.interpolate(layer2_out, size=layer1_out.shape[2:], mode='bilinear', align_corners=False)
+        layer3_out = F.interpolate(layer3_out, size=layer1_out.shape[2:], mode='bilinear', align_corners=False)
         low_level_feature = torch.cat([layer1_out, layer2_out, layer3_out], dim=1)
         return low_level_feature
 
     def forward_fusion_and_sr(self, semantic_feature, low_level_feature):
         target_h, target_w = low_level_feature.shape[2:]
-        semantic_feature = F.interpolate(semantic_feature, size=(target_h, target_w), mode='bicubic',
+        semantic_feature = F.interpolate(semantic_feature, size=(target_h, target_w), mode='bilinear',
                                          align_corners=False)
         fused_feature = torch.cat([semantic_feature, low_level_feature], dim=1)
         fused_feature = self.fusion_conv(fused_feature)
@@ -277,39 +266,16 @@ class PerceptualLoss(nn.Module):
         for param in self.semantic_model.parameters():
             param.requires_grad = False
 
-    def rgb_to_hsv(self, img):
-        r, g, b = img[:, 0], img[:, 1], img[:, 2]
-        mx = torch.max(img, dim=1)[0]
-        mn = torch.min(img, dim=1)[0]
-        df = mx - mn
-        h = torch.zeros_like(r)
-        s = torch.zeros_like(r)
-        v = mx
-
-        mask_df = df > 0
-        h[mask_df & (mx == r)] = ((g - b) / df)[mask_df & (mx == r)] % 6
-        h[mask_df & (mx == g)] = ((b - r) / df + 2)[mask_df & (mx == g)]
-        h[mask_df & (mx == b)] = ((r - g) / df + 4)[mask_df & (mx == b)]
-        h = h / 6.0
-        s[mask_df] = df[mask_df] / mx[mask_df]
-        return torch.stack([h, s, v], dim=1)
-
     def forward(self, sr_img, hr_img, lr_img, compute_semantic=True):
-        sr_img_denorm = (sr_img * self.std + self.mean).clamp(0, 1)
-        hr_img_denorm = (hr_img * self.std + self.mean).clamp(0, 1)
-        lr_img_denorm = (lr_img * self.std + self.mean).clamp(0, 1)
-
-        sr_feat = self.vgg(sr_img_denorm)
-        hr_feat = self.vgg(hr_img_denorm)
+        sr_feat = self.vgg(sr_img)
+        hr_feat = self.vgg(hr_img)
         perc_loss = F.mse_loss(sr_feat, hr_feat)
 
-        sr_hsv = self.rgb_to_hsv(sr_img_denorm)
-        hr_hsv = self.rgb_to_hsv(hr_img_denorm)
-        color_loss = F.mse_loss(sr_hsv[:, 0], hr_hsv[:, 0])
-
         if compute_semantic:
-            sr_semantic = self.semantic_model(sr_img_denorm)['out']
-            lr_semantic = self.semantic_model(lr_img_denorm)['out']
+            sr_img_norm = (sr_img - self.mean) / self.std
+            lr_img_norm = (lr_img - self.mean) / self.std
+            sr_semantic = self.semantic_model(sr_img_norm)['out']
+            lr_semantic = self.semantic_model(lr_img_norm)['out']
             sr_semantic = F.interpolate(sr_semantic, size=lr_semantic.shape[2:], mode='bilinear', align_corners=False)
             sr_semantic = F.softmax(sr_semantic, dim=1)
             lr_semantic = F.softmax(lr_semantic, dim=1)
@@ -321,7 +287,20 @@ class PerceptualLoss(nn.Module):
         else:
             semantic_loss = torch.tensor(0.0, device=sr_img.device)
 
-        return perc_loss, semantic_loss, color_loss
+        return perc_loss, semantic_loss
+
+# 新增颜色一致性损失函数
+def color_consistency_loss(sr_img, hr_img):
+    """
+    计算 SR 和 HR 图像在每个通道上的均值和方差差异
+    """
+    sr_mean = sr_img.mean(dim=[2, 3])  # [B, C]
+    hr_mean = hr_img.mean(dim=[2, 3])
+    sr_var = sr_img.var(dim=[2, 3])
+    hr_var = hr_img.var(dim=[2, 3])
+    mean_loss = F.mse_loss(sr_mean, hr_mean)
+    var_loss = F.mse_loss(sr_var, hr_var)
+    return mean_loss + var_loss
 
 # 4. 训练与评估
 def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler,
@@ -346,11 +325,6 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
     first_batch = next(train_iter)
     print("训练数据管道预热完成！")
 
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1).to(device)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1).to(device)
-    def denormalize(img):
-        return (img * std + mean).clamp(0, 1)
-
     for epoch in range(num_epochs):
         model.train()
         running_loss = 0.0
@@ -360,21 +334,19 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         lr_img, hr_img = lr_img.to(device), hr_img.to(device)
         with autocast('cuda'):
             sr_img = model(lr_img)
-            sr_img_denorm = denormalize(sr_img)
-            hr_img_denorm = denormalize(hr_img)
-            lr_img_denorm = denormalize(lr_img)
-
-            sr_img_denorm = gaussian_blur(sr_img_denorm, kernel_size=3, sigma=0.3)  # 减小 sigma
-
-            l1_loss = criterion_l1(sr_img_denorm, hr_img_denorm)
-            perc_loss, semantic_loss, color_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic=True)
-            loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss + 1.0 * color_loss) / accumulation_steps
+            l1_loss = criterion_l1(sr_img, hr_img)
+            compute_semantic = True
+            perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
+            color_loss = color_consistency_loss(sr_img, hr_img)
+            loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss + 0.1 * color_loss) / accumulation_steps
 
             print(f"第 {epoch + 1} 轮, 第 1 批次:")
-            print(f"低分辨率图像: 最小值={lr_img_denorm.min().item():.4f}, 最大值={lr_img_denorm.max().item():.4f}")
-            print(f"高分辨率图像: 最小值={hr_img_denorm.min().item():.4f}, 最大值={hr_img_denorm.max().item():.4f}")
-            print(f"超分辨率图像（反归一化前）: 最小值={sr_img.min().item():.4f}, 最大值={sr_img.max().item():.4f}")
-            print(f"超分辨率图像: 最小值={sr_img_denorm.min().item():.4f}, 最大值={sr_img_denorm.max().item():.4f}")
+            print(f"低分辨率图像: 最小值={lr_img.min().item():.4f}, 最大值={lr_img.max().item():.4f}, "
+                  f"平均值={lr_img.mean().item():.4f}, 标准差={lr_img.std().item():.4f}")
+            print(f"高分辨率图像: 最小值={hr_img.min().item():.4f}, 最大值={hr_img.max().item():.4f}, "
+                  f"平均值={hr_img.mean().item():.4f}, 标准差={hr_img.std().item():.4f}")
+            print(f"超分辨率图像: 最小值={sr_img.min().item():.4f}, 最大值={sr_img.max().item():.4f}, "
+                  f"平均值={sr_img.mean().item():.4f}, 标准差={sr_img.std().item():.4f}")
             print(f"L1 Loss: {l1_loss.item():.4f}, Perc Loss: {perc_loss.item():.4f}, "
                   f"Semantic Loss: {semantic_loss.item():.4f}, Color Loss: {color_loss.item():.4f}, "
                   f"总损失: {loss.item() * accumulation_steps:.4f}")
@@ -393,16 +365,11 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
 
             with autocast('cuda'):
                 sr_img = model(lr_img)
-                sr_img_denorm = denormalize(sr_img)
-                hr_img_denorm = denormalize(hr_img)
-                lr_img_denorm = denormalize(lr_img)
-
-                sr_img_denorm = gaussian_blur(sr_img_denorm, kernel_size=3, sigma=0.3)
-
-                l1_loss = criterion_l1(sr_img_denorm, hr_img_denorm)
+                l1_loss = criterion_l1(sr_img, hr_img)
                 compute_semantic = (i % 5 == 0)
-                perc_loss, semantic_loss, color_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
-                loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss + 1.0 * color_loss) / accumulation_steps
+                perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic)
+                color_loss = color_consistency_loss(sr_img, hr_img)
+                loss = (2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss + 0.1 * color_loss) / accumulation_steps
 
             scaler.scale(loss).backward()
 
@@ -417,8 +384,8 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             progress_bar.set_postfix({'训练损失': f'{avg_loss:.4f}'})
 
             if i == 0 and epoch % 10 == 0:
-                writer.add_image('SR_Image', sr_img_denorm[0], epoch)
-                writer.add_image('HR_Image', hr_img_denorm[0], epoch)
+                writer.add_image('SR_Image', sr_img[0], epoch)
+                writer.add_image('HR_Image', hr_img[0], epoch)
 
         train_loss = running_loss / len(train_loader)
 
@@ -430,19 +397,14 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
             for lr_img, hr_img in val_data:
                 with autocast('cuda'):
                     sr_img = model(lr_img)
-                    sr_img_denorm = denormalize(sr_img)
-                    hr_img_denorm = denormalize(hr_img)
-                    lr_img_denorm = denormalize(lr_img)
-
-                    sr_img_denorm = gaussian_blur(sr_img_denorm, kernel_size=3, sigma=0.3)
-
-                    l1_loss = criterion_l1(sr_img_denorm, hr_img_denorm)
-                    perc_loss, semantic_loss, color_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic=True)
-                    loss = 2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss + 1.0 * color_loss
+                    l1_loss = criterion_l1(sr_img, hr_img)
+                    perc_loss, semantic_loss = criterion_perceptual(sr_img, hr_img, lr_img, compute_semantic=True)
+                    color_loss = color_consistency_loss(sr_img, hr_img)
+                    loss = 2.0 * l1_loss + 1.0 * perc_loss + 0.5 * semantic_loss + 0.1 * color_loss
 
                 val_loss += loss.item()
-                val_psnr += psnr(sr_img_denorm, hr_img_denorm).item()
-                val_ssim += ssim(sr_img_denorm, hr_img_denorm).item()
+                val_psnr += psnr(sr_img, hr_img).item()
+                val_ssim += ssim(sr_img, hr_img).item()
 
         val_loss /= len(val_loader)
         val_psnr /= len(val_loader)
@@ -452,8 +414,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
         writer.add_scalar('Loss/Val', val_loss, epoch)
         writer.add_scalar('PSNR/Val', val_psnr, epoch)
         writer.add_scalar('SSIM/Val', val_ssim, epoch)
-        lr = optimizer.param_groups[0]['lr']
-        writer.add_scalar('Learning Rate', lr, epoch)
+        writer.add_scalar('Learning Rate', optimizer.param_groups[0]['lr'], epoch)
 
         scheduler.step(val_loss)
 
@@ -469,7 +430,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
 
         print(
             f"第 [{epoch + 1}/{num_epochs}] 轮 - 训练损失: {train_loss:.4f}, 验证损失: {val_loss:.4f}, "
-            f"PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}, 学习率: {lr:.6f}"
+            f"PSNR: {val_psnr:.2f}, SSIM: {val_ssim:.4f}, 学习率: {optimizer.param_groups[0]['lr']:.6f}"
         )
 
         if epoch < num_epochs - 1:
@@ -481,6 +442,7 @@ def train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_
 
 # 主函数
 if __name__ == "__main__":
+    # 定义唯一的日志目录
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     log_dir = os.path.join(current_dir, f'runs/run_{timestamp}')
     os.makedirs(log_dir, exist_ok=True)
@@ -514,7 +476,7 @@ if __name__ == "__main__":
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=5)
 
     train_and_validate(model, train_loader, val_loader, criterion_l1, criterion_perceptual, optimizer, scheduler,
-                       device, log_dir, num_epochs=100, accumulation_steps=2)
+                       device, log_dir, num_epochs=200, accumulation_steps=2)
 
     torch.save(model.state_dict(), "models/final_model.pth")
     print("最终模型保存为 models/final_model.pth")
