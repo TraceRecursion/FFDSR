@@ -1,0 +1,14 @@
+task: semantic_test
+data:
+  base_dir: "../Documents/数据集/CitySpaces"
+  test_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/test"
+  test_label_dir: "gtFine_trainvaltest/gtFine/test"
+  crop_size: 512
+  batch_size: 1
+model:
+  type: deeplabv3_resnet101
+  num_classes: 19
+  pretrained_weights: "COCO_WITH_VOC_LABELS_V1"
+  model_path: "models/best_semantic_model.pth"
+output:
+  dir: "outputs/semantic"

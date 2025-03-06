@@ -1,0 +1,20 @@
+task: semantic_train
+data:
+  base_dir: "../Documents/数据集/CitySpaces"
+  train_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/train"
+  train_label_dir: "gtFine_trainvaltest/gtFine/train"
+  val_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/val"
+  val_label_dir: "gtFine_trainvaltest/gtFine/val"
+  crop_size: 512
+  batch_size: 18
+model:
+  type: deeplabv3_resnet101
+  num_classes: 19
+  pretrained_weights: "COCO_WITH_VOC_LABELS_V1"
+training:
+  num_epochs: 100
+  lr: 0.0001
+  weight_decay: 0.0001
+  accumulation_steps: 2
+  output_dir: "models"
+  log_dir: "runs_semantic"

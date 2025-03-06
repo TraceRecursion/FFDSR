@@ -1,0 +1,18 @@
+task: sr_train
+data:
+  base_dir: "../Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit"
+  train_hr_dir: "train"
+  train_lr_dir: "train_lr_x4"
+  val_hr_dir: "val"
+  val_lr_dir: "val_lr_x4"
+  crop_size: 512
+  batch_size: 13
+model:
+  type: FeatureFusionSR
+  semantic_model_path: "models/best_semantic_model.pth"
+training:
+  num_epochs: 50
+  lr: 0.0002
+  weight_decay: 0.05
+  accumulation_steps: 2
+  output_dir: "runs"
