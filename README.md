@@ -1,4 +1,4 @@
-tensorboard --logdir=runs --host=100.74.5.7 --port=6006[RADEME.md](RADEME.md)
+tensorboard --logdir=runs_semantic --host=100.74.5.7 --port=6006
 
 FFDSR/
 ├── configs/                  # 配置文件目录

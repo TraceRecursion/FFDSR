@@ -1,6 +1,6 @@
 task: sr_test
 data:
-  base_dir: "../Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit"
+  base_dir: "../../Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit"
   test_hr_dir: "test"
   test_lr_dir: "test_lr_x4"
   batch_size: 2

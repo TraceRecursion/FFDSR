@@ -1,6 +1,6 @@
 task: semantic_test
 data:
-  base_dir: "../Documents/数据集/CitySpaces"
+  base_dir: "../../Documents/数据集/CitySpaces"
   test_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/test"
   test_label_dir: "gtFine_trainvaltest/gtFine/test"
   crop_size: 512

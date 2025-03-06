@@ -1,6 +1,6 @@
 task: sr_train
 data:
-  base_dir: "../Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit"
+  base_dir: "../../Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit"
   train_hr_dir: "train"
   train_lr_dir: "train_lr_x4"
   val_hr_dir: "val"

@@ -4,6 +4,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from tqdm import tqdm
 import os
+from datetime import datetime  # 新增导入
 from ..datasets.semantic_dataset import CityscapesDataset
 from ..models.semantic_model import get_semantic_model
 from ..utils.metrics import calculate_miou
@@ -29,7 +30,10 @@ class SemanticTrainer:
         train_loader = DataLoader(train_dataset, batch_size=self.config['data']['batch_size'], shuffle=True, num_workers=8, pin_memory=True)
         val_loader = DataLoader(val_dataset, batch_size=self.config['data']['batch_size'], shuffle=False, num_workers=8, pin_memory=True)
 
-        writer = SummaryWriter(self.config['training']['log_dir'])
+        # 使用当前时间创建子目录
+        current_time = datetime.now().strftime('%Y%m%d-%H%M')
+        log_dir = os.path.join(self.config['training']['log_dir'], current_time)
+        writer = SummaryWriter(log_dir)
         best_miou = 0.0
 
         for epoch in range(self.config['training']['num_epochs']):
@@ -56,6 +60,8 @@ class SemanticTrainer:
 
             if val_miou > best_miou:
                 best_miou = val_miou
+                # 确保目标目录存在
+                os.makedirs(self.config['training']['output_dir'], exist_ok=True)
                 torch.save(self.model.state_dict(), os.path.join(self.config['training']['output_dir'], "best_semantic_model.pth"))
 
     def validate(self, val_loader):

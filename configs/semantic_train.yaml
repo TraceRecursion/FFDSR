@@ -1,6 +1,6 @@
 task: semantic_train
 data:
-  base_dir: "../Documents/数据集/CitySpaces"
+  base_dir: "../../Documents/数据集/CitySpaces"
   train_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/train"
   train_label_dir: "gtFine_trainvaltest/gtFine/train"
   val_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/val"
