@@ -37,7 +37,7 @@ class SemanticTrainer:
         for epoch in range(self.config['training']['num_epochs']):
             self.model.train()
             running_loss = 0.0
-            train_tqdm = tqdm(train_loader, desc=f"第 [{epoch+1}/{self.config['training']['num_epochs']}] 轮 训练中")
+            train_tqdm = tqdm(train_loader, desc=f"第 [{epoch+1}/{self.config['training']['num_epochs']}] 轮 训练中 (lr: {self.optimizer.param_groups[0]['lr']:.6f})")
             for i, (imgs, labels, _) in enumerate(train_tqdm):
                 imgs, labels = imgs.to(self.device), labels.to(self.device)
                 self.optimizer.zero_grad()
@@ -56,6 +56,7 @@ class SemanticTrainer:
             writer.add_scalar('Loss/Train', running_loss / len(train_loader), epoch)
             writer.add_scalar('Loss/Val', val_loss, epoch)
             writer.add_scalar('mIoU/Val', val_miou, epoch)
+            writer.add_scalar('Learning_Rate', self.optimizer.param_groups[0]['lr'], epoch)
             self.scheduler.step(val_loss)
             print(f"Validation Loss: {val_loss:.4f}, Validation mIoU: {val_miou:.4f}")
 

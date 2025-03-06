@@ -38,7 +38,7 @@ class SRTrainer:
         for epoch in range(self.config['training']['num_epochs']):
             self.model.train()
             running_loss = 0.0
-            train_tqdm = tqdm(train_loader, desc=f"第 [{epoch+1}/{self.config['training']['num_epochs']}] 轮 训练中")
+            train_tqdm = tqdm(train_loader, desc=f"第 [{epoch+1}/{self.config['training']['num_epochs']}] 轮 训练中 (lr: {self.optimizer.param_groups[0]['lr']:.6f})")
             for i, (lr_img, hr_img) in enumerate(train_tqdm):
                 lr_img, hr_img = lr_img.to(self.device), hr_img.to(self.device)
                 self.optimizer.zero_grad()
@@ -58,6 +58,7 @@ class SRTrainer:
             writer.add_scalar('Loss/Val', val_loss, epoch)
             writer.add_scalar('PSNR/Val', val_psnr, epoch)
             writer.add_scalar('SSIM/Val', val_ssim, epoch)
+            writer.add_scalar('Learning_Rate', self.optimizer.param_groups[0]['lr'], epoch)
             self.scheduler.step(val_loss)
             print(f"Validation Loss: {val_loss:.4f}, PSNR: {val_psnr:.4f}, SSIM: {val_ssim:.4f}")
 
