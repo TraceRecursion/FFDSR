@@ -12,20 +12,14 @@ def main():
     parser.add_argument('--config', type=str, required=True, help="Path to config file")
     args = parser.parse_args()
 
-    # 计算项目根目录（FFDSR/）
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
     config = load_config(os.path.join(project_root, args.config))
     config = resolve_paths(config, project_root)
 
-    # 确保输出目录存在
     if 'training' in config and 'output_dir' in config['training']:
         os.makedirs(config['training']['output_dir'], exist_ok=True)
     if 'output' in config and 'dir' in config['output']:
         os.makedirs(config['output']['dir'], exist_ok=True)
-
-    # 调试：打印解析后的配置
-    print(f"项目根目录: {project_root}")
-    print(f"解析后的数据路径: {config['data']}")
 
     if config['task'] == 'semantic_train':
         trainer = SemanticTrainer(config)
