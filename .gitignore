@@ -3,5 +3,5 @@ c__pycache__/
 
 outputs/
 models/
-
+runs_semantic/
 .idea/

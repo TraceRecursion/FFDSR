@@ -6,15 +6,26 @@ data:
   val_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/val"
   val_label_dir: "gtFine_trainvaltest/gtFine/val"
   crop_size: 512
-  batch_size: 18
+  batch_size: 16
 model:
   type: deeplabv3_resnet101
   num_classes: 19
   pretrained_weights: "COCO_WITH_VOC_LABELS_V1"
 training:
   num_epochs: 100
-  lr: 0.0001
-  weight_decay: 0.0001
+  lr: 0.001
+  weight_decay: 0.0005
   accumulation_steps: 2
   output_dir: "models"
   log_dir: "runs_semantic"
+weight:
+  use_dynamic: true       # 是否使用动态计算的类别权重
+  use_log_scale: true     # 是否使用对数缩放压缩权重范围
+  mix_ratio: 0.3          # 混合预定义权重的比例(0.0~1.0)
+  min_weight: 0.1         # 权重的最小值
+  max_weight: 3.0         # 权重的最大值
+  use_progressive: true   # 是否使用渐进式权重调整
+  warmup_epochs: 30       # 权重预热轮数
+  focal_weight: 0.7       # Focal Loss权重
+  dice_weight: 0.3        # Dice Loss权重
+  gamma: 2.0              # Focal Loss的gamma参数

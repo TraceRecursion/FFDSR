@@ -5,6 +5,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from tqdm import tqdm
 import torch
+import random
 
 
 class CityscapesDataset(Dataset):
@@ -13,10 +14,24 @@ class CityscapesDataset(Dataset):
         self.label_dir = label_dir
         self.crop_size = crop_size
         self.test_mode = test_mode
-        self.transform = transform or transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
+
+        # 增强数据预处理
+        if transform:
+            self.transform = transform
+        else:
+            if not test_mode:
+                self.transform = transforms.Compose([
+                    transforms.ColorJitter(brightness=0.3, contrast=0.3, saturation=0.3, hue=0.1),
+                    transforms.RandomHorizontalFlip(p=0.5),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                ])
+            else:
+                self.transform = transforms.Compose([
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+                ])
+
         self.images = []
         self.labels = []
 
@@ -35,10 +50,30 @@ class CityscapesDataset(Dataset):
 
     def __getitem__(self, idx):
         img = Image.open(self.images[idx]).convert('RGB')
-        img_tensor = self.transform(img)
 
         if self.label_dir:
             label = Image.open(self.labels[idx])
+
+            # 应用相同的随机变换
+            if not self.test_mode and random.random() > 0.5:
+                # 随机缩放 (0.75-1.25)
+                scale = random.uniform(0.75, 1.25)
+                new_width = int(img.width * scale)
+                new_height = int(img.height * scale)
+                img = img.resize((new_width, new_height), Image.BILINEAR)
+                label = label.resize((new_width, new_height), Image.NEAREST)
+
+            # 随机裁剪
+            if not self.test_mode and self.crop_size and img.width > self.crop_size and img.height > self.crop_size:
+                top = random.randint(0, img.height - self.crop_size)
+                left = random.randint(0, img.width - self.crop_size)
+                img = img.crop((left, top, left + self.crop_size, top + self.crop_size))
+                label = label.crop((left, top, left + self.crop_size, top + self.crop_size))
+
+            # 应用颜色增强和归一化
+            img_tensor = self.transform(img)
+
+            # 处理标签
             label_np = np.array(label, dtype=np.uint8)
             id2trainId = np.full((256,), 255, dtype=np.uint8)
             id2trainId[0] = 0  # unlabeled
@@ -69,11 +104,9 @@ class CityscapesDataset(Dataset):
             id2trainId[25] = 18  # bicycle
             label_np = id2trainId[label_np]
 
-            if not self.test_mode and self.crop_size and img_tensor.shape[1] > self.crop_size:
-                top = np.random.randint(0, img_tensor.shape[1] - self.crop_size)
-                left = np.random.randint(0, img_tensor.shape[2] - self.crop_size)
-                img_tensor = img_tensor[:, top:top + self.crop_size, left:left + self.crop_size]
-                label_np = label_np[top:top + self.crop_size, left:left + self.crop_size]
             label_tensor = torch.from_numpy(label_np).long()
             return img_tensor, label_tensor, os.path.basename(self.images[idx])
+
+        # 测试模式或无标签情况
+        img_tensor = self.transform(img)
         return img_tensor, os.path.basename(self.images[idx])
