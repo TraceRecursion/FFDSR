@@ -1,0 +1,7 @@
+c__pycache__/
+*.py[cod]
+
+outputs/
+models/
+
+.idea/
