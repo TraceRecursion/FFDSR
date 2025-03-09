@@ -1,7 +1,4 @@
-c__pycache__/
-*.py[cod]
-
+__pycache__/
 outputs/
-models/
 runs_semantic/
 .idea/

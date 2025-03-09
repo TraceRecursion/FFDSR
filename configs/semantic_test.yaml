@@ -4,11 +4,15 @@ data:
   test_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/test"
   test_label_dir: "gtFine_trainvaltest/gtFine/test"
   crop_size: 512
-  batch_size: 1
+  batch_size: 16
 model:
-  type: deeplabv3_resnet101
+  type: deeplabv3plus_mobilenet
   num_classes: 19
-  pretrained_weights: "COCO_WITH_VOC_LABELS_V1"
-  model_path: "models/best_semantic_model.pth"
+  pretrained_weights: "models/best_deeplabv3plus_mobilenet_cityscapes_os16.pth"
 output:
   dir: "outputs/semantic"
+  save_quality: 85  # 添加JPEG保存质量参数
+  max_image_size: 1024  # 限制最大图片尺寸
+  # 添加低资源模式
+  low_memory_mode: true  # 启用低内存模式，关闭标签和详细显示
+  skip_large_images: false  # 是否跳过大图像

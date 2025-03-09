@@ -1,38 +1,57 @@
-tensorboard --logdir=runs_semantic --host=100.74.5.7 --port=6006
+# FFDSR - 特征融合深度超分辨率
 
+基于语义分割特征融合的深度超分辨率重建系统，支持城市场景图像的语义分析和高质量重建。
+
+## 项目结构
+```
 FFDSR/
 ├── configs/                  # 配置文件目录
 │   ├── semantic_train.yaml   # 语义分割训练配置
 │   ├── semantic_test.yaml    # 语义分割测试配置
 │   ├── sr_train.yaml         # 超分辨率训练配置
 │   └── sr_test.yaml          # 超分辨率测试配置
+├── date_X4/                  # 数据预处理脚本
+│   ├── CitySpaces_HR-to-LR.py  # CitySpaces数据集下采样处理
+│   └── DIV2K_HR-to-LR.py     # DIV2K数据集下采样处理
+├── models/                   # 预训练模型保存目录
+│   └── best_deeplabv3plus_mobilenet_cityscapes_os16.pth  # DeepLabV3+预训练权重
 ├── src/                      # 源代码目录
 │   ├── datasets/             # 数据集模块
 │   │   ├── __init__.py
-│   │   ├── semantic_dataset.py
-│   │   └── sr_dataset.py
+│   │   ├── semantic_dataset.py  # 语义分割数据集
+│   │   └── sr_dataset.py     # 超分辨率数据集
 │   ├── models/               # 模型模块
 │   │   ├── __init__.py
-│   │   ├── semantic_model.py
-│   │   └── sr_model.py
+│   │   ├── _deeplab.py       # DeepLab框架实现
+│   │   ├── backbone/         # 骨干网络
+│   │   │   ├── __init__.py
+│   │   │   └── mobilenetv2.py  # MobileNetV2实现
+│   │   ├── network.py        # 网络构建函数
+│   │   ├── semantic_model.py # 语义分割模型
+│   │   ├── sr_model.py       # 超分辨率模型
+│   │   └── utils.py          # 模型工具函数
 │   ├── utils/                # 工具模块
 │   │   ├── __init__.py
-│   │   ├── config.py       # 配置文件解析
-│   │   ├── visualize.py    # 可视化函数
-│   │   ├── metrics.py      # 评估指标
-│   │   └── common.py       # 通用工具函数
+│   │   ├── common.py         # 通用工具函数
+│   │   ├── config.py         # 配置文件解析
+│   │   ├── loss.py           # 损失函数
+│   │   ├── metrics.py        # 评估指标
+│   │   └── visualize.py      # 可视化函数
 │   ├── trainers/             # 训练和测试逻辑
 │   │   ├── __init__.py
-│   │   ├── semantic_trainer.py
-│   │   ├── semantic_tester.py
-│   │   ├── sr_trainer.py
-│   │   └── sr_tester.py
+│   │   ├── semantic_trainer.py  # 语义分割训练器
+│   │   ├── semantic_tester.py   # 语义分割测试器
+│   │   ├── sr_trainer.py     # 超分辨率训练器
+│   │   └── sr_tester.py      # 超分辨率测试器
+│   ├── __init__.py
 │   └── main.py               # 主入口脚本
 ├── outputs/                  # 输出目录（自动生成）
-├── runs/                     # TensorBoard日志目录（自动生成）
-└── models/                   # 模型保存目录（自动生成）
+│   └── semantic/             # 语义分割结果
+├── runs/                     # 超分辨率训练日志目录
+└── runs_semantic/            # 语义分割训练日志目录
+```
 
-使用方法
+## 使用方法
 
 安装依赖：
 

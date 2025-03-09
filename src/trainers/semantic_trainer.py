@@ -103,7 +103,11 @@ class SemanticTrainer:
             eta_min=1e-6  # 最小学习率
         )
 
-        self.scaler = torch.amp.GradScaler('cuda')
+        # 根据设备类型选择合适的scaler
+        if self.device.type == 'cuda':
+            self.scaler = torch.amp.GradScaler('cuda')
+        else:
+            self.scaler = torch.amp.GradScaler()
 
     def train(self):
         # 创建数据加载器
@@ -143,14 +147,26 @@ class SemanticTrainer:
             for i, (imgs, labels, _) in enumerate(train_tqdm):
                 imgs, labels = imgs.to(self.device), labels.to(self.device)
                 self.optimizer.zero_grad()
-                with torch.amp.autocast('cuda'):
+                
+                # 根据设备类型选择是否使用自动混合精度
+                if self.device.type == 'cuda' or self.device.type == 'mps':
+                    with torch.amp.autocast(device_type=self.device.type):
+                        outputs = self.model(imgs)['out']
+                        loss = self.criterion(outputs, labels) / self.config['training']['accumulation_steps']
+                    self.scaler.scale(loss).backward()
+                    if (i + 1) % self.config['training']['accumulation_steps'] == 0:
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                        self.optimizer.zero_grad()
+                else:
+                    # 在CPU上不使用混合精度
                     outputs = self.model(imgs)['out']
                     loss = self.criterion(outputs, labels) / self.config['training']['accumulation_steps']
-                self.scaler.scale(loss).backward()
-                if (i + 1) % self.config['training']['accumulation_steps'] == 0:
-                    self.scaler.step(self.optimizer)
-                    self.scaler.update()
-                    self.optimizer.zero_grad()
+                    loss.backward()
+                    if (i + 1) % self.config['training']['accumulation_steps'] == 0:
+                        self.optimizer.step()
+                        self.optimizer.zero_grad()
+                        
                 running_loss += loss.item() * self.config['training']['accumulation_steps']
                 train_tqdm.set_postfix(loss=loss.item())
 

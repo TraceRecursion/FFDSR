@@ -8,9 +8,9 @@ data:
   crop_size: 512
   batch_size: 16
 model:
-  type: deeplabv3_resnet101
+  type: deeplabv3plus_mobilenet
   num_classes: 19
-  pretrained_weights: "COCO_WITH_VOC_LABELS_V1"
+  pretrained_weights: "models/best_deeplabv3plus_mobilenet_cityscapes_os16.pth"  # 预训练权重路径
 training:
   num_epochs: 100
   lr: 0.001

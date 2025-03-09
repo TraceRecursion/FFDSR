@@ -6,11 +6,12 @@ import os
 from ..datasets.sr_dataset import SRDataset
 from ..models.sr_model import FeatureFusionSR
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+from ..utils.common import get_device
 
 class SRTester:
     def __init__(self, config):
         self.config = config
-        self.device, device_name = torch.cuda.is_available() and (torch.device("cuda"), "CUDA") or (torch.device("cpu"), "CPU")
+        self.device, device_name = get_device()
         print(f"使用设备: {device_name}")
         self.model = FeatureFusionSR(self.config['model']['semantic_model_path']).to(self.device)
         self.model.load_state_dict(torch.load(self.config['model']['model_path'], map_location=self.device))

@@ -8,17 +8,24 @@ from datetime import datetime
 from ..datasets.sr_dataset import SRDataset
 from ..models.sr_model import FeatureFusionSR
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
+from ..utils.common import get_device
 
 class SRTrainer:
     def __init__(self, config):
         self.config = config
-        self.device, device_name = torch.cuda.is_available() and (torch.device("cuda"), "CUDA") or (torch.device("cpu"), "CPU")
+        self.device, device_name = get_device()
         print(f"使用设备: {device_name}")
         self.model = FeatureFusionSR(self.config['model']['semantic_model_path']).to(self.device)
         self.criterion_l1 = nn.L1Loss()
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.config['training']['lr'], weight_decay=self.config['training']['weight_decay'])
         self.scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(self.optimizer, 'min', 0.5, 3)
-        self.scaler = torch.amp.GradScaler('cuda')
+        
+        # 根据设备类型选择合适的scaler
+        if self.device.type == 'cuda':
+            self.scaler = torch.amp.GradScaler('cuda')
+        else:
+            self.scaler = torch.amp.GradScaler()
+            
         self.psnr = PeakSignalNoiseRatio().to(self.device)
         self.ssim = StructuralSimilarityIndexMeasure().to(self.device)
 

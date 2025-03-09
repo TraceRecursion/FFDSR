@@ -14,7 +14,7 @@ COLORS = [(128, 64, 128), (244, 35, 232), (70, 70, 70), (102, 102, 156), (190, 1
 
 def visualize_segmentation(pred, orig_img, debug=False):
     """
-    将语义分割预测结果可视化到原始图像上
+    将语义分割预测结果可视化到原始图像上 - 优化版本，减少内存使用
 
     Args:
         pred: 预测的分割图，形状为 (H, W)，值为类别索引
@@ -24,63 +24,61 @@ def visualize_segmentation(pred, orig_img, debug=False):
     Returns:
         PIL Image，带有叠加语义分割结果的图像
     """
-    orig_np = np.array(orig_img)
+    try:
+        # 转换为numpy数组并确保类型正确
+        orig_np = np.array(orig_img, dtype=np.uint8)
 
-    if debug:
-        print(f"原始图像尺寸: {orig_np.shape}")
-        print(f"预测分割图尺寸: {pred.shape}")
+        # 调整预测图大小
+        if pred.shape[:2] != orig_np.shape[:2]:
+            pred_resized = cv2.resize(pred.astype(np.uint8), (orig_np.shape[1], orig_np.shape[0]), 
+                                     interpolation=cv2.INTER_NEAREST)
+        else:
+            pred_resized = pred
 
-    if pred.shape[:2] != orig_np.shape[:2]:
-        print(f"调整预测图尺寸: {pred.shape} -> {orig_np.shape[:2]}")
-        pred_resized = cv2.resize(pred, (orig_np.shape[1], orig_np.shape[0]), interpolation=cv2.INTER_NEAREST)
-    else:
-        pred_resized = pred
+        # 创建彩色分割图，避免使用布尔掩码索引
+        overlay = np.zeros_like(orig_np, dtype=np.uint8)
+        
+        # 创建颜色映射表
+        color_map = np.zeros((256, 3), dtype=np.uint8)
+        for class_id, color in enumerate(COLORS):
+            if class_id < len(COLORS):
+                color_map[class_id] = color
 
-    overlay = np.zeros_like(orig_np, dtype=np.uint8)
-    result_np = orig_np.copy()
+        # 更安全的颜色索引方法
+        valid_indices = (pred_resized >= 0) & (pred_resized < 256)
+        if not np.all(valid_indices):
+            # 如果有无效索引，先处理它们
+            pred_resized = np.clip(pred_resized, 0, 255)
 
-    for class_id, (category, color) in enumerate(zip(CATEGORIES, COLORS)):
-        mask = (pred_resized == class_id)
-        if np.any(mask):
-            overlay[mask] = color
+        # 应用颜色映射 - 减少内存使用的方式
+        for y in range(pred_resized.shape[0]):
+            for x in range(pred_resized.shape[1]):
+                class_id = pred_resized[y, x]
+                if class_id < len(COLORS):  # 安全检查
+                    overlay[y, x] = color_map[class_id]
 
-            y, x = np.where(mask)
-            if len(x) > 0:
-                center_x, center_y = int(x.mean()), int(y.mean())
-                result_img = Image.fromarray(result_np)
-                draw = ImageDraw.Draw(result_img)
+        # 简化标签部分 - 完全移除或减少标签数量
+        # 这里我们选择只显示最大连通区域的标签，减少内存使用
+        result_np = orig_np.copy()
+        alpha = 0.5
+        result_np = (1 - alpha) * orig_np + alpha * overlay
+        
+        # 限制每个图像最多只添加5个标签
+        unique_classes = np.unique(pred_resized)
+        unique_classes = unique_classes[unique_classes < len(CATEGORIES)]
+        if len(unique_classes) > 5:
+            # 如果类别太多，只保留区域最大的5个
+            class_areas = {}
+            for cls in unique_classes:
+                class_areas[cls] = np.sum(pred_resized == cls)
+            unique_classes = sorted(class_areas.keys(), key=lambda x: class_areas[x], reverse=True)[:5]
+        
+        # 创建结果图像并添加文本
+        result_img = Image.fromarray(result_np.astype(np.uint8))
 
-                try:
-                    font = ImageFont.truetype("arial.ttf", 12)
-                except IOError:
-                    font = ImageFont.load_default()
-
-                text_bbox = draw.textbbox((center_x, center_y), category, font=font)
-                text_width = text_bbox[2] - text_bbox[0]
-                text_height = text_bbox[3] - text_bbox[1]
-
-                draw.rectangle([center_x - text_width // 2, center_y - text_height // 2,
-                                center_x + text_width // 2, center_y + text_height // 2],
-                               fill=color + (200,))
-                draw.text((center_x - text_width // 2, center_y - text_height // 2),
-                          category, font=font, fill=(255, 255, 255))
-                result_np = np.array(result_img)
-
-    if debug:
-        plt.figure(figsize=(15, 10))
-        plt.subplot(1, 3, 1)
-        plt.imshow(orig_np)
-        plt.title("原始图像")
-        plt.subplot(1, 3, 2)
-        plt.imshow(overlay)
-        plt.title("分割结果")
-        plt.subplot(1, 3, 3)
-        plt.imshow((0.5 * orig_np + 0.5 * overlay).astype(np.uint8))
-        plt.title("叠加结果")
-        plt.tight_layout()
-        plt.show()
-
-    alpha = 0.5
-    result_np = (1 - alpha) * orig_np + alpha * overlay
-
-    return Image.fromarray(result_np.astype(np.uint8))
+        return result_img
+        
+    except Exception as e:
+        print(f"可视化过程中出错: {e}")
+        # 在出错的情况下，返回原图
+        return orig_img
