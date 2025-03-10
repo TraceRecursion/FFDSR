@@ -5,6 +5,7 @@ from torch.utils.data import Dataset
 from torchvision import transforms
 from tqdm import tqdm
 
+
 class SRDataset(Dataset):
     def __init__(self, hr_dir, lr_dir, crop_size=None, preload=True):
         self.hr_dir = hr_dir
@@ -28,8 +29,10 @@ class SRDataset(Dataset):
                 self.lr_files.append(lr_dict[key])
 
         if self.preload:
-            self.hr_data = [self.to_tensor(Image.open(f).convert('RGB')) for f in tqdm(self.hr_files, desc="加载HR数据")]
-            self.lr_data = [self.to_tensor(Image.open(f).convert('RGB')) for f in tqdm(self.lr_files, desc="加载LR数据")]
+            self.hr_data = [self.to_tensor(Image.open(f).convert('RGB')) for f in
+                            tqdm(self.hr_files, desc="加载HR数据")]
+            self.lr_data = [self.to_tensor(Image.open(f).convert('RGB')) for f in
+                            tqdm(self.lr_files, desc="加载LR数据")]
 
     def __len__(self):
         return len(self.hr_files)
@@ -41,9 +44,16 @@ class SRDataset(Dataset):
             hr_img = self.to_tensor(Image.open(self.hr_files[idx]).convert('RGB'))
             lr_img = self.to_tensor(Image.open(self.lr_files[idx]).convert('RGB'))
 
-        if self.crop_size and hr_img.shape[1] > self.crop_size:
+        # 确保HR和LR图像尺寸比例为4:1
+        if self.crop_size and hr_img.shape[1] > self.crop_size and hr_img.shape[2] > self.crop_size:
+            # 随机选择一个HR裁剪区域
             y = np.random.randint(0, hr_img.shape[1] - self.crop_size)
             x = np.random.randint(0, hr_img.shape[2] - self.crop_size)
+            # 对HR进行裁剪
             hr_img = hr_img[:, y:y + self.crop_size, x:x + self.crop_size]
-            lr_img = lr_img[:, y // 4:(y + self.crop_size) // 4, x // 4:(x + self.crop_size) // 4]
+            # 确保LR裁剪区域与HR对应
+            lr_crop_size = self.crop_size // 4
+            lr_y, lr_x = y // 4, x // 4
+            lr_img = lr_img[:, lr_y:lr_y + lr_crop_size, lr_x:lr_x + lr_crop_size]
+
         return lr_img, hr_img

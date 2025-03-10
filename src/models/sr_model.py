@@ -3,6 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import models
 from .semantic_model import get_semantic_model
+import os
+
 
 class CBAM(nn.Module):
     # 从原代码中提取并简化
@@ -27,8 +29,9 @@ class CBAM(nn.Module):
         spatial = self.spatial_att(torch.cat([avg_pool, max_pool], dim=1)) * x
         return spatial
 
+
 class EnhancedEDSR(nn.Module):
-    def __init__(self, in_channels=256, out_channels=3, num_blocks=32):
+    def __init__(self, in_channels=256, out_channels=3, num_blocks=32, scale=4):
         super(EnhancedEDSR, self).__init__()
         self.conv1 = nn.Conv2d(in_channels, 64, kernel_size=3, padding=1)
         self.body = nn.Sequential(*[nn.Sequential(
@@ -38,24 +41,64 @@ class EnhancedEDSR(nn.Module):
             nn.Conv2d(64, 64, 3, padding=1),
             nn.BatchNorm2d(64)
         ) for _ in range(num_blocks)])
-        self.conv_up = nn.Conv2d(64, 64, 3, padding=1)
+
+        # 完全重写上采样部分，确保确实产生4倍放大
+        self.scale = scale
+        if scale == 4:
+            # 四倍上采样 - 明确的实现
+            self.upscale = nn.Sequential(
+                nn.Conv2d(64, 256, 3, padding=1),
+                nn.PixelShuffle(2),
+                nn.ReLU(inplace=True),
+                nn.Conv2d(64, 256, 3, padding=1),
+                nn.PixelShuffle(2),
+                nn.ReLU(inplace=True),
+            )
+        elif scale == 2:
+            self.upscale = nn.Sequential(
+                nn.Conv2d(64, 256, 3, padding=1),
+                nn.PixelShuffle(2),
+                nn.ReLU(inplace=True),
+            )
+        else:
+            # 对于其他比例使用直接插值
+            self.upscale = nn.Sequential(
+                nn.Conv2d(64, 64, 3, padding=1),
+                nn.ReLU(inplace=True),
+            )
+
         self.cbam = CBAM(64)
         self.conv_out = nn.Conv2d(64, out_channels, 3, padding=1)
 
+        print(f"初始化EnhancedEDSR，目标缩放倍数: {scale}x")
+
     def forward(self, x):
         x = self.conv1(x)
-        x = x + self.body(x)
-        x = F.interpolate(x, scale_factor=4, mode='bilinear', align_corners=False)
-        x = self.conv_up(x)
+        residual = x
+        x = self.body(x)
+        x = x + residual
+
+        # 上采样处理
+        x = self.upscale(x)
+
+        # 如果使用的是非2或4倍上采样，需要额外的插值
+        if self.scale not in [2, 4]:
+            x = F.interpolate(x, scale_factor=self.scale, mode='bicubic', align_corners=False)
+
+        # 打印形状用于调试
+        # print(f"上采样后形状: {x.shape}")
+
         x = self.cbam(x)
         return torch.sigmoid(self.conv_out(x))
 
+
 class FeatureFusionSR(nn.Module):
-    def __init__(self, semantic_model_path=None):
+    def __init__(self, semantic_model_path=None, scale=4):
         super(FeatureFusionSR, self).__init__()
-        self.semantic_model = get_semantic_model()
-        if semantic_model_path:
-            self.semantic_model.load_state_dict(torch.load(semantic_model_path, map_location='cpu'))
+        # 使用更健壮的语义模型加载方式
+        self.semantic_model = get_semantic_model(num_classes=19, pretrained_weights=semantic_model_path)
+
+        # 冻结语义模型参数
         self.semantic_model.eval()
         for param in self.semantic_model.parameters():
             param.requires_grad = False
@@ -64,9 +107,14 @@ class FeatureFusionSR(nn.Module):
         self.resnet = models.resnet50(weights='DEFAULT')
         self.fusion_conv = nn.Conv2d(1856, 256, 1)
         self.cbam = CBAM(256)
-        self.sr_net = EnhancedEDSR()
+        self.sr_net = EnhancedEDSR(scale=scale)
+        print(f"初始化SR模型, 缩放比例: {scale}x")
 
     def forward(self, lr_img):
+        # 记录输入的形状以便调试
+        input_shape = lr_img.shape
+        # print(f"SR模型输入形状: {input_shape}")
+
         with torch.no_grad():
             semantic_out = self.semantic_model(lr_img)['out']
         semantic_labels = semantic_out.argmax(dim=1)
@@ -88,4 +136,14 @@ class FeatureFusionSR(nn.Module):
             F.interpolate(semantic_feature, size=low_level_feature.shape[2:], mode='bilinear', align_corners=False),
             low_level_feature
         ], dim=1))
-        return self.sr_net(self.cbam(fused_feature))
+
+        sr_out = self.sr_net(self.cbam(fused_feature))
+        # print(f"SR模型输出形状: {sr_out.shape}, 预期形状: {input_shape[0]}, {input_shape[1]}, {input_shape[2]*4}, {input_shape[3]*4}")
+
+        # 确保输出尺寸是输入的4倍
+        if sr_out.shape[2] != input_shape[2] * 4 or sr_out.shape[3] != input_shape[3] * 4:
+            sr_out = F.interpolate(sr_out, size=(input_shape[2] * 4, input_shape[3] * 4),
+                                   mode='bicubic', align_corners=False)
+            # print(f"调整后的SR输出形状: {sr_out.shape}")
+
+        return sr_out

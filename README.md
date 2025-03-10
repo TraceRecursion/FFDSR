@@ -88,3 +88,10 @@ python -m src.main --config configs/sr_test.yaml
 调整参数：
 
 修改 configs/ 中的 YAML 文件以调整超参数。
+
+tensorboard：
+
+```bash
+tensorboard --logdir=runs --host=100.74.5.7 --port=6006
+tensorboard --logdir=runs_semantic --host=100.74.5.7 --port=6006
+```
