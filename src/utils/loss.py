@@ -2,6 +2,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from tqdm import tqdm
+import concurrent.futures
+import os
+import numpy as np
+from functools import partial
 
 
 class DiceLoss(nn.Module):
@@ -89,11 +93,26 @@ class MixedLoss(nn.Module):
         self.focal.alpha = class_weights.to(self.focal.alpha.device)
 
 
+def _process_batch(batch_indices, dataset, num_classes):
+    """处理一批数据样本并计算类别统计"""
+    batch_counts = torch.zeros(num_classes)
+    for idx in batch_indices:
+        _, label, _ = dataset[idx]
+        mask = (label != 255)  # 忽略无效像素
+        valid_labels = label[mask]
+
+        # 统计每个类别的像素数量
+        if len(valid_labels) > 0:
+            for c in range(num_classes):
+                batch_counts[c] += torch.sum(valid_labels == c).item()
+    return batch_counts
+
+
 def get_class_weights(dataset, num_classes=19, use_predefined=False,
                       min_weight=0.05, max_weight=5.0,
                       use_log_scale=False, mix_ratio=0.0):
     """
-    计算Cityscapes数据集的类别权重
+    计算Cityscapes数据集的类别权重，使用多线程加速计算
 
     参数:
         dataset: 数据集对象，用于计算类别分布
@@ -122,18 +141,34 @@ def get_class_weights(dataset, num_classes=19, use_predefined=False,
     # 从数据集动态计算权重
     print("开始计算动态类别权重...")
     print(f"使用完整数据集计算权重，共 {len(dataset)} 个样本")
+
+    # 自动确定并发线程数量
+    max_workers = os.cpu_count()
+    print(f"使用多线程加速计算，自动检测CPU核心数: {max_workers}")
+
+    # 将数据集样本索引划分为多个批次
+    dataset_size = len(dataset)
+    batch_size = max(1, dataset_size // (max_workers * 4))  # 每个工作线程处理多个批次
+    batches = []
+    for i in range(0, dataset_size, batch_size):
+        batches.append(list(range(i, min(i + batch_size, dataset_size))))
+
     class_count = torch.zeros(num_classes)
 
-    # 使用完整数据集计算权重，而不是采样
-    for idx in tqdm(range(len(dataset)), desc="计算类别分布"):
-        _, label, _ = dataset[idx]
-        mask = (label != 255)  # 忽略无效像素
-        valid_labels = label[mask]
+    # 多线程处理批次
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        # 创建处理函数，固定数据集和类别数参数
+        process_func = partial(_process_batch, dataset=dataset, num_classes=num_classes)
 
-        # 统计每个类别的像素数量
-        if len(valid_labels) > 0:
-            for c in range(num_classes):
-                class_count[c] += torch.sum(valid_labels == c).item()
+        # 使用tqdm跟踪多线程进度
+        futures = {executor.submit(process_func, batch): batch for batch in batches}
+
+        # 收集结果
+        for future in tqdm(concurrent.futures.as_completed(futures),
+                           total=len(batches),
+                           desc="计算类别分布"):
+            batch_counts = future.result()
+            class_count += batch_counts
 
     # 打印各类别像素数量分布
     print("类别像素分布:")

@@ -6,7 +6,7 @@ data:
   val_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/val"
   val_label_dir: "gtFine_trainvaltest/gtFine/val"
   crop_size: 512
-  batch_size: 16
+  batch_size: 48
 model:
   type: deeplabv3plus_mobilenet
   num_classes: 19
