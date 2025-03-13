@@ -3,6 +3,7 @@ import os
 from src.utils.config import load_config, resolve_paths
 from src.trainers.semantic_trainer import SemanticTrainer
 from src.trainers.semantic_tester import SemanticTester
+from src.trainers.semantic_evaluator import SemanticEvaluator
 from src.trainers.sr_trainer import SRTrainer
 from src.trainers.sr_tester import SRTester
 
@@ -27,6 +28,9 @@ def main():
     elif config['task'] == 'semantic_test':
         tester = SemanticTester(config)
         tester.test()
+    elif config['task'] == 'semantic_eval':  # 新增评估任务
+        evaluator = SemanticEvaluator(config)
+        evaluator.evaluate()
     elif config['task'] == 'sr_train':
         trainer = SRTrainer(config)
         trainer.train()

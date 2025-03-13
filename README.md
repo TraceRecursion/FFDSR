@@ -8,6 +8,7 @@ FFDSR/
 ├── configs/                  # 配置文件目录
 │   ├── semantic_train.yaml   # 语义分割训练配置
 │   ├── semantic_test.yaml    # 语义分割测试配置
+│   ├── semantic_eval.yaml    # 语义分割评估配置
 │   ├── sr_train.yaml         # 超分辨率训练配置
 │   └── sr_test.yaml          # 超分辨率测试配置
 ├── date_X4/                  # 数据预处理脚本
@@ -71,6 +72,12 @@ python -m src.main --config configs/semantic_train.yaml
 
 ```bash
 python -m src.main --config configs/semantic_test.yaml
+```
+
+语义分割评估（IoU分析）：
+
+```bash
+python -m src.main --config configs/semantic_eval.yaml
 ```
 
 超分辨率训练：
