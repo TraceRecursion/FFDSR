@@ -3,7 +3,7 @@ data:
   base_dir: "../../Documents/数据集/CitySpaces"
   val_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/val"
   val_label_dir: "gtFine_trainvaltest/gtFine/val"
-  batch_size: 4
+  batch_size: 16
 model:
   type: deeplabv3plus_mobilenet
   num_classes: 19
