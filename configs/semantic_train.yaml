@@ -6,13 +6,13 @@ data:
   val_img_dir: "leftImg8bit_trainvaltest/leftImg8bit/val"
   val_label_dir: "gtFine_trainvaltest/gtFine/val"
   crop_size: 512
-  batch_size: 48
+  batch_size: 36
 model:
   type: deeplabv3plus_mobilenet
   num_classes: 19
   pretrained_weights: "models/best_deeplabv3plus_mobilenet_cityscapes_os16.pth"  # 预训练权重路径
 training:
-  num_epochs: 100
+  num_epochs: 1000
   lr: 0.001
   weight_decay: 0.0005
   accumulation_steps: 2

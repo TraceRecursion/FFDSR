@@ -7,7 +7,7 @@ data:
 model:
   type: deeplabv3plus_mobilenet
   num_classes: 19
-  pretrained_weights: "models/best_deeplabv3plus_mobilenet_cityscapes_os16.pth"
+  pretrained_weights: "models/best_semantic_model.pth"
 output:
   dir: "outputs/evaluation"
   save_results: false  # 是否保存分割结果图像
