@@ -1,0 +1,11 @@
+task: srcnn_test
+data:
+  base_dir: "../../Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit"
+  test_hr_dir: "test"
+  test_lr_dir: "test_lr_x4"
+  batch_size: 2
+model:
+  type: SRCNN
+  model_path: "runs/srcnn_run_20250305-163649/models/best_srcnn_model.pth"
+output:
+  dir: "output/srcnn"

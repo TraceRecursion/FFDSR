@@ -6,6 +6,8 @@ from src.trainers.semantic_tester import SemanticTester
 from src.trainers.semantic_evaluator import SemanticEvaluator
 from src.trainers.sr_trainer import SRTrainer
 from src.trainers.sr_tester import SRTester
+from src.trainers.srcnn_trainer import SRCNNTrainer  # 导入SRCNN训练器
+from src.trainers.srcnn_tester import SRCNNTester    # 导入SRCNN测试器
 
 
 def main():
@@ -28,7 +30,7 @@ def main():
     elif config['task'] == 'semantic_test':
         tester = SemanticTester(config)
         tester.test()
-    elif config['task'] == 'semantic_eval':  # 新增评估任务
+    elif config['task'] == 'semantic_eval':
         evaluator = SemanticEvaluator(config)
         evaluator.evaluate()
     elif config['task'] == 'sr_train':
@@ -36,6 +38,12 @@ def main():
         trainer.train()
     elif config['task'] == 'sr_test':
         tester = SRTester(config)
+        tester.test()
+    elif config['task'] == 'srcnn_train':  # 新增SRCNN训练任务
+        trainer = SRCNNTrainer(config)
+        trainer.train()
+    elif config['task'] == 'srcnn_test':   # 新增SRCNN测试任务
+        tester = SRCNNTester(config)
         tester.test()
 
 

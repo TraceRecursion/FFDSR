@@ -1,0 +1,17 @@
+task: srcnn_train
+data:
+  base_dir: "../../Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit"
+  train_hr_dir: "train"
+  train_lr_dir: "train_lr_x4"
+  val_hr_dir: "val"
+  val_lr_dir: "val_lr_x4"
+  crop_size: 512
+  batch_size: 16
+model:
+  type: SRCNN
+training:
+  num_epochs: 100
+  lr: 0.0001
+  weight_decay: 0.0001
+  accumulation_steps: 1
+  output_dir: "runs"

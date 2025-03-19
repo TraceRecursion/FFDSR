@@ -10,7 +10,9 @@ FFDSR/
 │   ├── semantic_test.yaml    # 语义分割测试配置
 │   ├── semantic_eval.yaml    # 语义分割评估配置
 │   ├── sr_train.yaml         # 超分辨率训练配置
-│   └── sr_test.yaml          # 超分辨率测试配置
+│   ├── sr_test.yaml          # 超分辨率测试配置
+│   ├── srcnn_train.yaml      # SRCNN训练配置
+│   └── srcnn_test.yaml       # SRCNN测试配置
 ├── date_X4/                  # 数据预处理脚本
 │   ├── CitySpaces_HR-to-LR.py  # CitySpaces数据集下采样处理
 │   └── DIV2K_HR-to-LR.py     # DIV2K数据集下采样处理
@@ -30,6 +32,7 @@ FFDSR/
 │   │   ├── network.py        # 网络构建函数
 │   │   ├── semantic_model.py # 语义分割模型
 │   │   ├── sr_model.py       # 超分辨率模型
+│   │   ├── srcnn_model.py    # SRCNN模型实现
 │   │   └── utils.py          # 模型工具函数
 │   ├── utils/                # 工具模块
 │   │   ├── __init__.py
@@ -42,8 +45,11 @@ FFDSR/
 │   │   ├── __init__.py
 │   │   ├── semantic_trainer.py  # 语义分割训练器
 │   │   ├── semantic_tester.py   # 语义分割测试器
+│   │   ├── semantic_evaluator.py # 语义分割评估器
 │   │   ├── sr_trainer.py     # 超分辨率训练器
-│   │   └── sr_tester.py      # 超分辨率测试器
+│   │   ├── sr_tester.py      # 超分辨率测试器
+│   │   ├── srcnn_trainer.py  # SRCNN训练器
+│   │   └── srcnn_tester.py   # SRCNN测试器
 │   ├── __init__.py
 │   └── main.py               # 主入口脚本
 ├── outputs/                  # 输出目录（自动生成）
@@ -92,6 +98,18 @@ python -m src.main --config configs/sr_train.yaml
 python -m src.main --config configs/sr_test.yaml
 ```
 
+SRCNN训练：
+
+```bash
+python -m src.main --config configs/srcnn_train.yaml
+```
+
+SRCNN测试：
+
+```bash
+python -m src.main --config configs/srcnn_test.yaml
+```
+
 调整参数：
 
 修改 configs/ 中的 YAML 文件以调整超参数。
@@ -102,3 +120,12 @@ tensorboard：
 tensorboard --logdir=runs --host=100.74.5.7 --port=6006
 tensorboard --logdir=runs_semantic --host=100.74.5.7 --port=6006
 ```
+
+## 模型对比
+
+项目支持两种超分辨率模型：
+
+1. **FFDSR (特征融合深度超分辨率)** - 我们的核心模型，融合语义分割特征和图像特征，提供高质量超分辨率重建。
+2. **SRCNN (经典超分辨率CNN)** - 用于对比的基准模型，Dong等人(2014)提出的经典三层超分辨率卷积网络。
+
+通过运行不同模型的训练和测试，可分析它们在城市场景超分辨率重建中的性能差异。
