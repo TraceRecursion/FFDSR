@@ -4,7 +4,12 @@ from torchvision.utils import save_image
 from tqdm import tqdm
 import os
 from ..datasets.sr_dataset import SRDataset
-from ..models.sr_model import FeatureFusionSR
+from ..models.sr_model import (
+    FeatureFusionSR,
+    FeatureFusionSR_NoSemantic,
+    FeatureFusionSR_NoCBAM,
+    FeatureFusionSR_SingleScale
+)
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from ..utils.common import get_device
 
@@ -13,8 +18,40 @@ class SRTester:
         self.config = config
         self.device, device_name = get_device()
         print(f"使用设备: {device_name}")
-        self.model = FeatureFusionSR(self.config['model']['semantic_model_path']).to(self.device)
-        self.model.load_state_dict(torch.load(self.config['model']['model_path'], map_location=self.device))
+        
+        # 根据模型类型创建相应的模型实例
+        model_type = self.config['model']['type']
+        model_variant = self.config['model'].get('model_variant', 'standard')
+        
+        print(f"创建模型类型: {model_type}, 变体: {model_variant}")
+        
+        if model_type == 'FeatureFusionSR':
+            self.model = FeatureFusionSR(
+                self.config['model'].get('semantic_model_path')
+            ).to(self.device)
+        elif model_type == 'FeatureFusionSR_NoSemantic':
+            self.model = FeatureFusionSR_NoSemantic().to(self.device)
+        elif model_type == 'FeatureFusionSR_NoCBAM':
+            self.model = FeatureFusionSR_NoCBAM(
+                self.config['model'].get('semantic_model_path')
+            ).to(self.device)
+        elif model_type == 'FeatureFusionSR_SingleScale':
+            self.model = FeatureFusionSR_SingleScale(
+                self.config['model'].get('semantic_model_path')
+            ).to(self.device)
+        else:
+            raise ValueError(f"未知的模型类型: {model_type}")
+            
+        # 加载模型权重
+        model_path = self.config['model']['model_path']
+        print(f"加载模型权重: {model_path}")
+        try:
+            self.model.load_state_dict(torch.load(model_path, map_location=self.device))
+            print("模型权重加载成功")
+        except Exception as e:
+            print(f"加载模型权重时出错: {e}")
+            exit(1)
+            
         self.model.eval()
         self.psnr = PeakSignalNoiseRatio().to(self.device)
         self.ssim = StructuralSimilarityIndexMeasure().to(self.device)

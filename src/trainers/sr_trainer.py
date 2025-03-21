@@ -7,7 +7,12 @@ from tqdm import tqdm
 import os
 from datetime import datetime
 from ..datasets.sr_dataset import SRDataset
-from ..models.sr_model import FeatureFusionSR
+from ..models.sr_model import (
+    FeatureFusionSR, 
+    FeatureFusionSR_NoSemantic,
+    FeatureFusionSR_NoCBAM,
+    FeatureFusionSR_SingleScale
+)
 from torchmetrics.image import PeakSignalNoiseRatio, StructuralSimilarityIndexMeasure
 from ..utils.common import get_device
 
@@ -29,7 +34,35 @@ class SRTrainer:
             scale_factor = 4
             print(f"无法从数据集检测缩放比例，使用默认值: {scale_factor}x")
 
-        self.model = FeatureFusionSR(self.config['model']['semantic_model_path'], scale=scale_factor).to(self.device)
+        # 根据任务类型和配置选择相应的模型
+        model_type = self.config['model']['type']
+        model_variant = self.config['model'].get('model_variant', 'standard')
+        
+        print(f"创建模型类型: {model_type}, 变体: {model_variant}")
+        
+        # 根据模型类型创建相应的模型实例
+        if model_type == 'FeatureFusionSR':
+            self.model = FeatureFusionSR(
+                self.config['model'].get('semantic_model_path'), 
+                scale=scale_factor
+            ).to(self.device)
+        elif model_type == 'FeatureFusionSR_NoSemantic':
+            self.model = FeatureFusionSR_NoSemantic(
+                scale=scale_factor
+            ).to(self.device)
+        elif model_type == 'FeatureFusionSR_NoCBAM':
+            self.model = FeatureFusionSR_NoCBAM(
+                self.config['model'].get('semantic_model_path'), 
+                scale=scale_factor
+            ).to(self.device)
+        elif model_type == 'FeatureFusionSR_SingleScale':
+            self.model = FeatureFusionSR_SingleScale(
+                self.config['model'].get('semantic_model_path'), 
+                scale=scale_factor
+            ).to(self.device)
+        else:
+            raise ValueError(f"未知的模型类型: {model_type}")
+            
         self.criterion_l1 = nn.L1Loss()
         self.optimizer = torch.optim.AdamW(self.model.parameters(), lr=self.config['training']['lr'],
                                            weight_decay=self.config['training']['weight_decay'])
