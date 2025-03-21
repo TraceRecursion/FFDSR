@@ -7,6 +7,6 @@ data:
 model:
   type: FeatureFusionSR_NoSemantic
   model_variant: "no_semantic"
-  model_path: "runs/run_no_semantic_{DATE}/models/best_model.pth"
+  model_path: "runs/no_semantic_run_{DATE}/models/best_model.pth"
 output:
   dir: "output/sr_no_semantic"

@@ -8,6 +8,6 @@ model:
   type: FeatureFusionSR_SingleScale
   semantic_model_path: "models/best_semantic_model.pth"
   model_variant: "single_scale"
-  model_path: "runs/run_single_scale_{DATE}/models/best_model.pth"
+  model_path: "runs/single_scale_run_{DATE}/models/best_model.pth"
 output:
   dir: "output/sr_single_scale"

@@ -8,6 +8,6 @@ model:
   type: FeatureFusionSR_NoCBAM
   semantic_model_path: "models/best_semantic_model.pth"
   model_variant: "no_cbam"
-  model_path: "runs/run_no_cbam_{DATE}/models/best_model.pth"
+  model_path: "runs/no_cbam_run_{DATE}/models/best_model.pth"
 output:
   dir: "output/sr_no_cbam"

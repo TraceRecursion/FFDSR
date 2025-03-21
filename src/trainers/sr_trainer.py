@@ -100,7 +100,23 @@ class SRTrainer:
 
         # 创建当前运行的日志目录，并在其中创建models子目录
         current_time = datetime.now().strftime('%Y%m%d-%H%M')
-        log_dir = os.path.join(self.config['training']['output_dir'], f"run_{current_time}")
+        
+        # 根据模型类型或变体添加前缀
+        model_type = self.config['model']['type']
+        model_variant = self.config['model'].get('model_variant', 'standard')
+        
+        # 为消融实验添加特定前缀
+        if model_type == 'FeatureFusionSR_NoSemantic':
+            prefix = 'no_semantic_run_'
+        elif model_type == 'FeatureFusionSR_NoCBAM':
+            prefix = 'no_cbam_run_'
+        elif model_type == 'FeatureFusionSR_SingleScale':
+            prefix = 'single_scale_run_'
+        else:
+            # 标准FFDSR模型保持原样
+            prefix = 'run_'
+            
+        log_dir = os.path.join(self.config['training']['output_dir'], f"{prefix}{current_time}")
         models_dir = os.path.join(log_dir, "models")
         os.makedirs(models_dir, exist_ok=True)
 
