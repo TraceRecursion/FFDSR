@@ -7,6 +7,6 @@ data:
 model:
   type: FeatureFusionSR
   semantic_model_path: "models/best_deeplabv3plus_mobilenet_cityscapes_os16.pth"
-  model_path: "runs/run_20250305-163649/models/best_model.pth"
+  model_path: "runs/run_20250319-0722/models/best_model.pth"
 output:
-  dir: "output"
+  dir: "output/feature_fusion_sr"

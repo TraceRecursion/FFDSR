@@ -9,6 +9,6 @@ model:
   num_classes: 19
   pretrained_weights: "models/best_semantic_model.pth"
 output:
-  dir: "outputs/evaluation"
+  dir: "output/evaluation"
   save_results: false  # 是否保存分割结果图像
   save_confusion_matrix: true  # 是否保存混淆矩阵图

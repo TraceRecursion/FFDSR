@@ -10,7 +10,7 @@ model:
   num_classes: 19
   pretrained_weights: "models/best_deeplabv3plus_mobilenet_cityscapes_os16.pth"
 output:
-  dir: "outputs/semantic"
+  dir: "output/semantic"
   save_quality: 85  # 添加JPEG保存质量参数
   max_image_size: 1024  # 限制最大图片尺寸
   # 添加低资源模式
