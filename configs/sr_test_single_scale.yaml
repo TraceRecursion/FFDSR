@@ -1,0 +1,13 @@
+task: sr_test_single_scale
+data:
+  base_dir: "../../Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit"
+  test_hr_dir: "test"
+  test_lr_dir: "test_lr_x4"
+  batch_size: 2
+model:
+  type: FeatureFusionSR_SingleScale
+  semantic_model_path: "models/best_semantic_model.pth"
+  model_variant: "single_scale"
+  model_path: "runs/run_single_scale_{DATE}/models/best_model.pth"
+output:
+  dir: "output/sr_single_scale"

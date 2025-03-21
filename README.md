@@ -12,7 +12,13 @@ FFDSR/
 │   ├── sr_train.yaml         # 超分辨率训练配置
 │   ├── sr_test.yaml          # 超分辨率测试配置
 │   ├── srcnn_train.yaml      # SRCNN训练配置
-│   └── srcnn_test.yaml       # SRCNN测试配置
+│   ├── srcnn_test.yaml       # SRCNN测试配置
+│   ├── sr_train_no_semantic.yaml  # 无语义特征的FFDSR训练配置
+│   ├── sr_test_no_semantic.yaml   # 无语义特征的FFDSR测试配置
+│   ├── sr_train_no_cbam.yaml      # 无注意力机制的FFDSR训练配置
+│   ├── sr_test_no_cbam.yaml       # 无注意力机制的FFDSR测试配置
+│   ├── sr_train_single_scale.yaml # 单尺度特征的FFDSR训练配置
+│   └── sr_test_single_scale.yaml  # 单尺度特征的FFDSR测试配置
 ├── date_X4/                  # 数据预处理脚本
 │   ├── CitySpaces_HR-to-LR.py  # CitySpaces数据集下采样处理
 │   └── DIV2K_HR-to-LR.py     # DIV2K数据集下采样处理
@@ -129,3 +135,57 @@ tensorboard --logdir=runs_semantic --host=100.74.5.7 --port=6006
 2. **SRCNN (经典超分辨率CNN)** - 用于对比的基准模型，Dong等人(2014)提出的经典三层超分辨率卷积网络。
 
 通过运行不同模型的训练和测试，可分析它们在城市场景超分辨率重建中的性能差异。
+
+## 消融实验
+
+为验证FFDSR各组件的有效性，我们提供了多种消融实验变体：
+
+### 变体说明
+1. **FFDSR (完整模型)** - 包含所有组件，同时使用语义特征、CBAM注意力机制和多尺度特征。
+2. **w/o 语义特征** - 移除语义分割特征的变体，仅使用ResNet提取的图像特征。
+3. **w/o CBAM** - 移除CBAM注意力机制的变体，特征不经过注意力加权。
+4. **w/o 多尺度特征** - 只使用ResNet的Layer3特征，不进行多尺度特征融合。
+
+### 变体训练命令
+
+完整FFDSR模型：
+```bash
+python -m src.main --config configs/sr_train.yaml
+```
+
+无语义特征变体：
+```bash
+python -m src.main --config configs/sr_train_no_semantic.yaml
+```
+
+无CBAM变体：
+```bash
+python -m src.main --config configs/sr_train_no_cbam.yaml
+```
+
+单尺度特征变体：
+```bash
+python -m src.main --config configs/sr_train_single_scale.yaml
+```
+
+### 变体测试命令
+
+完整FFDSR模型：
+```bash
+python -m src.main --config configs/sr_test.yaml
+```
+
+无语义特征变体：
+```bash
+python -m src.main --config configs/sr_test_no_semantic.yaml
+```
+
+无CBAM变体：
+```bash
+python -m src.main --config configs/sr_test_no_cbam.yaml
+```
+
+单尺度特征变体：
+```bash
+python -m src.main --config configs/sr_test_single_scale.yaml
+```

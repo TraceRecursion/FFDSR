@@ -1,0 +1,13 @@
+task: sr_test_no_cbam
+data:
+  base_dir: "../../Documents/数据集/CitySpaces/leftImg8bit_trainvaltest/leftImg8bit"
+  test_hr_dir: "test"
+  test_lr_dir: "test_lr_x4"
+  batch_size: 2
+model:
+  type: FeatureFusionSR_NoCBAM
+  semantic_model_path: "models/best_semantic_model.pth"
+  model_variant: "no_cbam"
+  model_path: "runs/run_no_cbam_{DATE}/models/best_model.pth"
+output:
+  dir: "output/sr_no_cbam"
