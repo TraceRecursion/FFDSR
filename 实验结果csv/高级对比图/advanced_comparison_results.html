@@ -1,0 +1,53 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Advanced Model Comparison</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 30px; background-color: #f5f5f5; }
+        h1 { color: #2c3e50; text-align: center; margin-bottom: 30px; }
+        .image-container { margin-bottom: 40px; background-color: white; padding: 20px; border-radius: 8px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+        img { max-width: 100%; display: block; margin: 0 auto; }
+        h2 { color: #34495e; border-bottom: 1px solid #eee; padding-bottom: 10px; margin-top: 0; }
+        .description { color: #7f8c8d; margin-bottom: 15px; }
+        footer { text-align: center; margin-top: 40px; color: #95a5a6; font-size: 0.9em; }
+    </style>
+</head>
+<body>
+    <h1>Advanced Model Comparison</h1>
+
+    <div class="image-container">
+        <h2>Learning Rate Comparison</h2>
+        <p class="description">Comparison of learning rate schedules used during training. Note the logarithmic scale.</p>
+        <img src="comparison_Learning_Rate.png" alt="Learning_Rate comparison">
+    </div>
+    
+    <div class="image-container">
+        <h2>Training Loss Comparison</h2>
+        <p class="description">Training loss comparison across different models. Lower values indicate better training convergence.</p>
+        <img src="comparison_Loss_Train.png" alt="Loss_Train comparison">
+    </div>
+    
+    <div class="image-container">
+        <h2>Validation Loss Comparison</h2>
+        <p class="description">Validation loss comparison, showing how well each model generalizes to unseen data.</p>
+        <img src="comparison_Loss_Val.png" alt="Loss_Val comparison">
+    </div>
+    
+    <div class="image-container">
+        <h2>PSNR (dB) Comparison</h2>
+        <p class="description">Peak Signal-to-Noise Ratio (PSNR) on validation data. Higher values indicate better image quality.</p>
+        <img src="comparison_PSNR_Val.png" alt="PSNR_Val comparison">
+    </div>
+    
+    <div class="image-container">
+        <h2>SSIM Comparison</h2>
+        <p class="description">Structural Similarity Index (SSIM) on validation data. Higher values indicate better perceptual quality.</p>
+        <img src="comparison_SSIM_Val.png" alt="SSIM_Val comparison">
+    </div>
+    
+    <footer>
+        <p>Generated using matplotlib. All models trained with the same dataset and evaluation metrics.</p>
+    </footer>
+</body>
+</html>
